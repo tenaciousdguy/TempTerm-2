@@ -1,0 +1,12 @@
+{
+  "name": "tempterm2",
+  "version": "2.0.0",
+  "description": "TempTerm 2.0",
+  "main": "main.js",
+  "scripts": {
+    "start": "electron ."
+  },
+  "devDependencies": {
+    "electron": "^44.5.1"
+  }
+}
