@@ -1,9 +1,22 @@
+:root {
+  --bg: #0c0c0c;
+  --text: #d4d4d4;
+  --bright: #ffffff;
+  --dim: #6e6e6e;
+  --accent: #4ade80;
+  --code: #67e8f9;
+  --line: color-mix(in srgb, var(--dim) 55%, var(--bg));
+  --line2: color-mix(in srgb, var(--dim) 30%, var(--bg));
+  --faint: color-mix(in srgb, var(--dim) 65%, var(--bg));
+  --panel: color-mix(in srgb, var(--text) 7%, var(--bg));
+}
+
 * { box-sizing: border-box; border-radius: 0; }
 
 body {
   margin: 0;
-  background: #0c0c0c;
-  color: #d4d4d4;
+  background: var(--bg);
+  color: var(--text);
   font: 15px/1.6 Consolas, monospace;
   user-select: none;
   overflow: hidden;
@@ -23,7 +36,7 @@ h1 { font-size: 30px; }
 .screen.center { justify-content: center; }
 .screen[hidden] { display: none; }
 
-.dim { color: #6e6e6e; }
+.dim { color: var(--dim); }
 .ok { color: #4ade80; }
 .fail { color: #f87171; }
 .small { font-size: 12px; }
@@ -51,10 +64,10 @@ h1 { font-size: 30px; }
   min-height: 36px;
   margin: 0 0 30px;
   padding: 2px 14px;
-  border: 1px solid #444;
+  border: 1px solid var(--line);
   font-size: 13px;
 }
-.account.selected { border-color: #fff; color: #fff; }
+.account.selected { border-color: var(--bright); color: var(--bright); }
 .account.selected::before {
   content: '>';
   position: absolute;
@@ -74,8 +87,8 @@ nav { width: 330px; }
   pointer-events: none;
 }
 .item .label { position: relative; }
-.item.selected { color: #fff; }
-.item.disabled { color: #555; }
+.item.selected { color: var(--bright); }
+.item.disabled { color: var(--faint); }
 
 .mark {
   position: absolute;
@@ -91,12 +104,12 @@ nav { width: 330px; }
   height: 1.6em;
 }
 .status { position: absolute; right: 16px; bottom: 10px; }
-.status.on { color: #4ade80; }
+.status.on { color: var(--accent); }
 
 /* create room */
 .box {
-  border: 1px solid #444;
-  background: #141414;
+  border: 1px solid var(--line);
+  background: var(--panel);
   padding: 20px 32px;
   min-width: 400px;
 }
@@ -107,15 +120,15 @@ nav { width: 330px; }
   justify-content: center;
 }
 .opt .label { position: relative; }
-.opt.selected { color: #fff; }
-.bignum { font-size: 30px; margin: 14px 0; color: #fff; }
+.opt.selected { color: var(--bright); }
+.bignum { font-size: 30px; margin: 14px 0; color: var(--bright); }
 
 /* room searcher */
 .screen.search { align-items: stretch; text-align: left; padding: 14px 24px 56px; }
 #sq {
   background: transparent;
   border: 0;
-  border-bottom: 1px solid #666;
+  border-bottom: 1px solid var(--line);
   outline: 0;
   color: inherit;
   font: inherit;
@@ -124,6 +137,7 @@ nav { width: 330px; }
   width: 100%;
   user-select: text;
 }
+#sq:focus { border-bottom-color: var(--bright); }
 #rl { flex: 1; overflow-y: auto; }
 .room {
   position: relative;
@@ -134,11 +148,37 @@ nav { width: 330px; }
   padding-left: 20px;
 }
 .room .host { flex: 1; }
-.room .num { color: #6e6e6e; }
-.room.selected { color: #fff; }
+.room .num { color: var(--dim); }
+.room .tag { color: var(--dim); }
+.room .code { color: var(--code); width: 7ch; }
+.room .code.hidden { color: var(--faint); }
+.room.selected { color: var(--bright); }
 .rmark { position: absolute; left: 0; }
 #s-msg { height: 1.6em; margin-bottom: 10px; }
 .hint { position: absolute; left: 24px; bottom: 14px; font-style: italic; }
+
+#cp {
+  display: flex;
+  gap: 14px;
+  align-items: center;
+  margin: 8px 0;
+  padding: 10px 14px;
+  border: 1px solid var(--line);
+  background: var(--panel);
+}
+#cp[hidden] { display: none; }
+#code-in {
+  background: transparent;
+  border: 0;
+  border-bottom: 1px solid var(--line);
+  outline: 0;
+  color: var(--bright);
+  font: inherit;
+  width: 100px;
+  letter-spacing: 2px;
+  text-transform: uppercase;
+  user-select: text;
+}
 
 /* chat */
 .screen.chat { align-items: stretch; justify-content: flex-start; text-align: left; }
@@ -152,6 +192,7 @@ nav { width: 330px; }
   gap: 6px;
 }
 #log p { word-break: break-word; }
+#log, #log * { user-select: text; cursor: text; }
 .who { font-weight: bold; }
 .inputbar {
   display: flex;
@@ -159,9 +200,9 @@ nav { width: 330px; }
   gap: 10px;
   height: 48px;
   padding: 0 16px;
-  border-top: 1px solid #333;
+  border-top: 1px solid var(--line2);
 }
-.prompt { color: #4ade80; }
+.prompt { color: var(--accent); }
 .inputbar input {
   flex: 1;
   background: transparent;
@@ -172,37 +213,23 @@ nav { width: 330px; }
   user-select: text;
 }
 
+/* changelog, credits, settings */
+.screen.page { align-items: stretch; justify-content: flex-start; text-align: left; padding: 24px 32px 0; }
+.ptitle { font-size: 18px; margin-bottom: 12px; }
+.scrollbody { flex: 1; overflow-y: auto; padding-bottom: 64px; }
+.vhead { margin-top: 18px; }
+.vhead.first { margin-top: 0; }
+.toggle { margin-top: 22px; color: var(--bright); }
+
+.srow { position: relative; padding-left: 26px; white-space: pre; min-height: 30px; line-height: 30px; }
+.srow.head { padding-left: 0; margin-top: 18px; color: var(--dim); font-style: italic; }
+.srow.head:first-child { margin-top: 0; }
+.srow.label, .srow.note { padding-left: 0; }
+.srow.note { color: var(--dim); font-style: italic; }
+.srow.on, .srow.active { color: var(--bright); }
+.smark { position: absolute; left: 0; color: var(--bright); }
+.setmsg { position: absolute; left: 32px; bottom: 34px; height: 1.6em; }
+
 ::-webkit-scrollbar { width: 8px; }
-::-webkit-scrollbar-track { background: #111; }
-::-webkit-scrollbar-thumb { background: #333; }
-
-/* chat text can be selected and copied */
-#log, #log * { user-select: text; cursor: text; }
-
-/* room searcher additions */
-#sq:focus { border-bottom-color: #fff; }
-.room .tag { color: #6e6e6e; }
-.room .code { color: #67e8f9; width: 7ch; }
-.room .code.hidden { color: #555; }
-#cp {
-  display: flex;
-  gap: 14px;
-  align-items: center;
-  margin: 8px 0;
-  padding: 10px 14px;
-  border: 1px solid #444;
-  background: #141414;
-}
-#cp[hidden] { display: none; }
-#code-in {
-  background: transparent;
-  border: 0;
-  border-bottom: 1px solid #666;
-  outline: 0;
-  color: #fff;
-  font: inherit;
-  width: 100px;
-  letter-spacing: 2px;
-  text-transform: uppercase;
-  user-select: text;
-}
+::-webkit-scrollbar-track { background: var(--bg); }
+::-webkit-scrollbar-thumb { background: var(--line2); }

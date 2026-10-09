@@ -3,6 +3,7 @@ import {
   fbCreateRoom, fbJoinRoom, fbLeaveRoom, fbCleanup,
   fbSendMessage, fbWatchRoom, fbListRooms,
 } from './firebase.js';
+import { settings, save, THEMES, SIZES, applyTheme, applyUi, applySize } from './settings.js';
 
 // ---------- state ----------
 function randomGuestName() {
@@ -10,18 +11,55 @@ function randomGuestName() {
 }
 
 const me = { name: randomGuestName(), uid: null };
-let account = null; // null means guest
-let room = null;    // the room you're currently in
-let busy = false;   // stops double presses while something is loading
+let account = null;
+let room = null;
+let busy = false;
+let current = 'splash';
+let splashReady = false;
+
+function el(tag, cls, text) {
+  const node = document.createElement(tag);
+  if (cls) node.className = cls;
+  if (text !== undefined) node.textContent = text;
+  return node;
+}
+
+// ---------- key router ----------
+// Every screen registers its own handlers here. One listener sends each key
+// (and each scroll of the wheel) to whichever screen is open, so a key that
+// opens a screen can never also be handled by the screen it opens.
+const screens = {};
+
+document.addEventListener('keydown', e => {
+  const s = screens[current];
+  if (s && s.key) s.key(e);
+});
+
+let lastWheel = 0;
+document.addEventListener('wheel', e => {
+  const s = screens[current];
+  if (!s || !s.wheel) return;
+  const now = Date.now();
+  if (now - lastWheel < 120) return;
+  lastWheel = now;
+  s.wheel(e.deltaY > 0 ? 1 : -1);
+});
+
+document.addEventListener('click', () => {
+  if (current === 'splash' && splashReady) show('menu');
+});
 
 // ---------- screens ----------
 function show(id) {
   clearInterval(search.timer);
+  current = id;
   document.querySelectorAll('.screen').forEach(s => s.hidden = s.id !== id);
   if (id === 'menu' && !account) me.name = randomGuestName();
   if (id === 'create') { create.step = 0; create.type = 0; create.limit = 10; busy = false; renderCreate(); }
   if (id === 'search') openSearch();
   if (id === 'chat') enterChat();
+  if (id === 'changelog') { oldOpen = false; renderChangelog(); document.getElementById('cl-scroll').scrollTop = 0; }
+  if (id === 'settings') openSettings();
 }
 
 // ---------- boot ----------
@@ -30,9 +68,9 @@ function wait(ms) {
 }
 
 function setStatus(on) {
-  const el = document.getElementById('status');
-  el.textContent = on ? '● server: connected' : '● server: not connected';
-  el.classList.toggle('on', on);
+  const status = document.getElementById('status');
+  status.textContent = on ? '● server: connected' : '● server: not connected';
+  status.classList.toggle('on', on);
 }
 
 function waitForServer(timeout) {
@@ -58,8 +96,8 @@ const steps = [
       } catch (err) { console.error(err); return false; }
     },
     okText: () => account ? 'ok' : 'guest' },
-  { label: 'loading themes', run: async () => true },
-  { label: 'syncing settings', run: async () => true },
+  { label: 'loading themes', run: async () => { applyTheme(); applyUi(); return true; } },
+  { label: 'syncing settings', run: async () => { applySize(); return true; } },
 ];
 
 async function boot() {
@@ -71,16 +109,12 @@ async function boot() {
     out.innerHTML += ok ? ' <span class="ok">' + text + '</span>\n' : ' <span class="fail">failed</span>\n';
   }
   document.getElementById('tap').classList.add('show');
-
-  const go = () => {
-    document.removeEventListener('click', go);
-    document.removeEventListener('keydown', onKey);
-    show('menu');
-  };
-  const onKey = e => { if (e.key === 'Enter' || e.key === ' ') go(); };
-  document.addEventListener('click', go);
-  document.addEventListener('keydown', onKey);
+  splashReady = true;
 }
+
+screens.splash = {
+  key: e => { if (splashReady && (e.key === 'Enter' || e.key === ' ')) show('menu'); },
+};
 
 // ---------- menu ----------
 const items = [
@@ -88,23 +122,23 @@ const items = [
   { label: 'Create Room', screen: 'create' },
   { label: 'Profile', screen: 'profile', needsAccount: true },
   { label: 'Settings', screen: 'settings' },
-  { label: 'Changelog & Socials', screen: 'changelog' },
+  { label: 'Changelog', screen: 'changelog' },
   { label: 'Credits', screen: 'credits' },
   { label: 'Quit', action: 'quit' },
 ];
 
-let selected = 1;   // 0 = the account box. 1 and up = the menu items
+let selected = 1;
 
 function renderAccount() {
-  const el = document.getElementById('account');
-  el.classList.toggle('selected', selected === 0);
-  el.textContent = '';
+  const box = document.getElementById('account');
+  box.classList.toggle('selected', selected === 0);
+  box.textContent = '';
   const name = document.createElement('span');
   name.textContent = account ? account.display + ' // ' + account.username : 'guest';
   const btn = document.createElement('span');
   btn.className = 'dim';
   btn.textContent = account ? '[log out]' : '[sign in]';
-  el.append(name, btn);
+  box.append(name, btn);
 }
 
 function renderMenu() {
@@ -163,24 +197,15 @@ function move(step) {
   render();
 }
 
-// ---------- menu input ----------
-document.addEventListener('keydown', e => {
-  if (document.getElementById('menu').hidden) return;
-  if (e.target.matches('input, textarea')) return;
-  const key = e.key.toLowerCase();
-  if (key === 'arrowdown' || key === 's') move(1);
-  else if (key === 'arrowup' || key === 'w') move(-1);
-  else if (key === 'enter') { activate(); e.stopImmediatePropagation(); }
-});
-
-let lastWheel = 0;
-document.addEventListener('wheel', e => {
-  if (document.getElementById('menu').hidden) return;
-  const now = Date.now();
-  if (now - lastWheel < 120) return;
-  lastWheel = now;
-  move(e.deltaY > 0 ? 1 : -1);
-});
+screens.menu = {
+  key: e => {
+    const key = e.key.toLowerCase();
+    if (key === 'arrowdown' || key === 's') move(1);
+    else if (key === 'arrowup' || key === 'w') move(-1);
+    else if (key === 'enter') activate();
+  },
+  wheel: dir => move(dir),
+};
 
 // ---------- create room ----------
 const create = { step: 0, type: 0, limit: 10 };
@@ -248,35 +273,28 @@ function createMove(dir) {
   if (create.step === 0) {
     create.type = (create.type + dir + types.length) % types.length;
   } else {
-    create.limit = Math.min(10, Math.max(2, create.limit - dir)); // up raises, down lowers
+    create.limit = Math.min(10, Math.max(2, create.limit - dir));
   }
   renderCreate();
 }
 
-document.addEventListener('keydown', e => {
-  if (document.getElementById('create').hidden) return;
-  const key = e.key.toLowerCase();
-  if (key === 'arrowdown' || key === 's') createMove(1);
-  else if (key === 'arrowup' || key === 'w') createMove(-1);
-  else if (key === 'enter') {
-    if (create.step === 0) { create.step = 1; renderCreate(); }
-    else startRoom();
-  } else if (key === 'escape') {
-    if (create.step === 1) { create.step = 0; renderCreate(); }
-    else show('menu');
-  }
-});
-
-document.addEventListener('wheel', e => {
-  if (document.getElementById('create').hidden) return;
-  const now = Date.now();
-  if (now - lastWheel < 120) return;
-  lastWheel = now;
-  createMove(e.deltaY > 0 ? 1 : -1);
-});
+screens.create = {
+  key: e => {
+    const key = e.key.toLowerCase();
+    if (key === 'arrowdown' || key === 's') createMove(1);
+    else if (key === 'arrowup' || key === 'w') createMove(-1);
+    else if (key === 'enter') {
+      if (create.step === 0) { create.step = 1; renderCreate(); }
+      else startRoom();
+    } else if (key === 'escape') {
+      if (create.step === 1) { create.step = 0; renderCreate(); }
+      else show('menu');
+    }
+  },
+  wheel: dir => createMove(dir),
+};
 
 // ---------- room searcher ----------
-// Three modes: 'list' (move with arrows / W S / wheel), 'text' (typing a search), 'code' (entering a private code).
 const search = { rooms: [], selLid: null, mode: 'list', timer: null };
 const sqInput = document.getElementById('sq');
 const codeInput = document.getElementById('code-in');
@@ -370,7 +388,7 @@ function openSearch() {
   renderRooms();
   setMode('list');
   refreshRooms();
-  search.timer = setInterval(refreshRooms, 5000); // the list refreshes itself
+  search.timer = setInterval(refreshRooms, 5000);
 }
 
 function moveSearch(step) {
@@ -421,36 +439,28 @@ function submitSearch() {
 
 sqInput.addEventListener('input', () => { search.selLid = null; renderRooms(); });
 
-document.addEventListener('keydown', e => {
-  if (document.getElementById('search').hidden) return;
-
-  if (search.mode === 'code') {
-    if (e.key === 'Enter') submitCode();
-    else if (e.key === 'Escape') setMode('list');
-    return;
-  }
-  if (search.mode === 'text') {
-    if (e.key === 'Enter') submitSearch();
-    else if (e.key === 'Escape' || e.key === 'ArrowDown') { e.preventDefault(); setMode('list'); }
-    return;
-  }
-
-  const key = e.key.toLowerCase();
-  if (key === 'arrowdown' || key === 's') moveSearch(1);
-  else if (key === 'arrowup' || key === 'w') moveSearch(-1);
-  else if (e.key === 'Enter') chooseRoom();
-  else if (e.key === '/' || e.key === 'Tab') { e.preventDefault(); setMode('text'); }
-  else if (key === 'r') refreshRooms();
-  else if (e.key === 'Escape') show('menu');
-});
-
-document.addEventListener('wheel', e => {
-  if (document.getElementById('search').hidden || search.mode !== 'list') return;
-  const now = Date.now();
-  if (now - lastWheel < 120) return;
-  lastWheel = now;
-  moveSearch(e.deltaY > 0 ? 1 : -1);
-});
+screens.search = {
+  key: e => {
+    if (search.mode === 'code') {
+      if (e.key === 'Enter') submitCode();
+      else if (e.key === 'Escape') setMode('list');
+      return;
+    }
+    if (search.mode === 'text') {
+      if (e.key === 'Enter') submitSearch();
+      else if (e.key === 'Escape' || e.key === 'ArrowDown') { e.preventDefault(); setMode('list'); }
+      return;
+    }
+    const key = e.key.toLowerCase();
+    if (key === 'arrowdown' || key === 's') moveSearch(1);
+    else if (key === 'arrowup' || key === 'w') moveSearch(-1);
+    else if (e.key === 'Enter') chooseRoom();
+    else if (e.key === '/' || e.key === 'Tab') { e.preventDefault(); setMode('text'); }
+    else if (key === 'r') refreshRooms();
+    else if (e.key === 'Escape') show('menu');
+  },
+  wheel: dir => { if (search.mode === 'list') moveSearch(dir); },
+};
 
 // ---------- chat ----------
 let stopWatch = null;
@@ -473,7 +483,7 @@ async function enterRoom(code, fresh = false, lid = null) {
 async function leaveCurrentRoom() {
   if (!room) return;
   const { code, lid } = room;
-  const name = me.name; // grab it before show('menu') picks a new guest name
+  const name = me.name;
   if (stopWatch) { stopWatch(); stopWatch = null; }
   room = null;
   localStorage.removeItem('lastRoom');
@@ -497,19 +507,18 @@ function msgEl(name, text) {
   return p;
 }
 
-// Lines are placed by server time so it always shows in the right order
 function isAfter(a, b) {
   const ta = Number(a.dataset.ts), tb = Number(b.dataset.ts);
   return ta !== tb ? ta > tb : a.dataset.key > b.dataset.key;
 }
 
-function insertLine(el, key, ts) {
-  el.dataset.key = key;
-  el.dataset.ts = ts || 0;
+function insertLine(node, key, ts) {
+  node.dataset.key = key;
+  node.dataset.ts = ts || 0;
   const log = document.getElementById('log');
-  let node = log.lastElementChild;
-  while (node && isAfter(node, el)) node = node.previousElementSibling;
-  log.insertBefore(el, node ? node.nextSibling : log.firstChild);
+  let prev = log.lastElementChild;
+  while (prev && isAfter(prev, node)) prev = prev.previousElementSibling;
+  log.insertBefore(node, prev ? prev.nextSibling : log.firstChild);
   log.scrollTop = log.scrollHeight;
 }
 
@@ -526,8 +535,8 @@ function enterChat() {
 
   stopWatch = fbWatchRoom(room.code, {
     onMessage: (key, m) => {
-      const el = m.type === 'system' ? lineEl('[system]: ' + m.text, 'dim') : msgEl(m.name, m.text);
-      insertLine(el, key, m.ts);
+      const node = m.type === 'system' ? lineEl('[system]: ' + m.text, 'dim') : msgEl(m.name, m.text);
+      insertLine(node, key, m.ts);
     },
     onMembers: members => {
       const n = Object.keys(members).length;
@@ -552,16 +561,252 @@ msgInput.addEventListener('keydown', e => {
   });
 });
 
-// Clicking the chat gives the typing box focus back unless you're selecting text to copy
 document.getElementById('log').addEventListener('mouseup', () => {
   if (!window.getSelection().toString()) msgInput.focus();
 });
 
-document.addEventListener('keydown', e => {
-  if (document.getElementById('chat').hidden) return;
-  if (e.key === 'Escape') leaveCurrentRoom();
-});
+screens.chat = {
+  key: e => { if (e.key === 'Escape') leaveCurrentRoom(); },
+};
+
+// ---------- changelog ----------
+const changelog = {
+  current: [
+    'Rebuilt from scratch',
+    'New boot screen',
+    'Guest mode: a fresh guest name every time you load the menu',
+  ],
+  old: [
+    { v: '1.5', notes: [
+      'Voice calls',
+      'Screensharing (for when in voice call)',
+      'Kick command',
+      'Voice Messages (May be buggy)',
+      'Multiple language support (English, Spanish, French and German)',
+      'Custom themes',
+      'Fixed GIFs and images breaking the app',
+      "Can't use certain special characters in username",
+    ] },
+    { v: '1.4', notes: [
+      'Settings Menu - Includes many themes and a few toggles',
+      'Image uploading',
+      'GIFs (paste a tenor URL if you want to)',
+      'More drawing pad features',
+      '[more] button (see what else i might be working on!)',
+      'You can no longer manually resize the window',
+      'New fun commands :]',
+      'Hold ESC to close app',
+    ] },
+    { v: '1.3.1', notes: [
+      'Added reserved usernames for admins and stuff + specials tags',
+      'System messages are all in bold',
+      'Chatter in room limit + display in room searcher',
+      'Username character limit',
+      'Various bug fixes',
+    ] },
+    { v: '1.3', notes: [
+      'Room searcher',
+      'You can now move the drawing pad',
+      'Leave/Join system messages are in bold now for some reason lol',
+      'You can now see how many chatters are in your room',
+      'You can see your ping now (hidden behind the music player)',
+      'SPLASH TEXTS',
+      'Made lots of socials! Go follow! :D',
+    ] },
+    { v: '1.2.2', notes: [
+      'Icon',
+      'Added a few animations',
+      'Fixed inactivity timer announcements showing up on main menu',
+      'Moved the music widget stuff around',
+    ] },
+    { v: '1.2.1', notes: [
+      'Updated drawing pad again',
+      'Added inactivity timer to prevent AFK users from clogging up rooms',
+      'Added volume slider to music',
+    ] },
+    { v: '1.2', notes: [
+      'You can now copy and paste images into the chat',
+      'Changed version numbering',
+      'Changed menu music and let you skip songs now',
+      'Added a check for room creation to prevent server message spam',
+      'Fixed menu spacing',
+      'Drawing pad got new features!',
+      'Made Updates screen scrollable',
+    ] },
+    { v: '1.1.1', notes: [
+      'Messages ACTUALLY clear from the servers',
+      'Added /clear command',
+      'Added room code checks',
+    ] },
+    { v: '1.1', notes: [
+      'Updates screen added',
+      'HUD controls added',
+      'Version numbering',
+      'Added "username typing..." indicator',
+      'Added drawing pad',
+      'Fixed menu navigation bugs',
+    ] },
+    { v: '1.0', notes: [
+      'Real-time anonymous chat',
+      'Room creation and joining',
+      'Sound effects and music',
+      'Ephemeral messages',
+    ] },
+  ],
+};
+
+let oldOpen = false;
+
+function renderChangelog() {
+  const body = document.getElementById('cl-body');
+  body.innerHTML = '';
+
+  body.appendChild(el('p', 'vhead first ok', '2.0 Updates:'));
+  changelog.current.forEach(note => body.appendChild(el('p', 'ok', '- ' + note)));
+
+  const toggle = el('p', 'toggle', '> ' + (oldOpen ? '[-]' : '[+]') + ' 1.x Updates:');
+  toggle.id = 'cl-toggle';
+  body.appendChild(toggle);
+
+  if (oldOpen) {
+    changelog.old.forEach(ver => {
+      body.appendChild(el('p', 'vhead dim', ver.v));
+      ver.notes.forEach(note => body.appendChild(el('p', '', '- ' + note)));
+    });
+  }
+}
+
+screens.changelog = {
+  key: e => {
+    const box = document.getElementById('cl-scroll');
+    const key = e.key.toLowerCase();
+    if (key === 'arrowdown' || key === 's') box.scrollBy({ top: 60 });
+    else if (key === 'arrowup' || key === 'w') box.scrollBy({ top: -60 });
+    else if (key === 'pagedown') box.scrollBy({ top: 300 });
+    else if (key === 'pageup') box.scrollBy({ top: -300 });
+    else if (key === 'enter') {
+      oldOpen = !oldOpen;
+      renderChangelog();
+      document.getElementById('cl-toggle').scrollIntoView({ block: 'nearest' });
+    } else if (key === 'escape') show('menu');
+  },
+};
+
+// ---------- credits ----------
+screens.credits = {
+  key: e => { if (e.key === 'Escape') show('menu'); },
+};
+
+// ---------- settings ----------
+const set = { selectable: [], cur: 0 };
+const SELECTABLE = ['radio', 'toggle', 'cycle', 'link'];
+
+function settingsRows() {
+  const rows = [];
+  rows.push({ type: 'head', text: 'appearance' });
+  rows.push({ type: 'label', text: 'Theme' });
+  Object.keys(THEMES).forEach(name => rows.push({ type: 'radio', key: 'theme', value: name, text: name }));
+  rows.push({ type: 'link', text: '+ New Custom Theme' });
+  rows.push({ type: 'head', text: 'window' });
+  rows.push({ type: 'label', text: 'Size (applies instantly)' });
+  SIZES.forEach(size => rows.push({ type: 'radio', key: 'size', value: size, text: size }));
+  rows.push({ type: 'head', text: 'toggles' });
+  rows.push({ type: 'toggle', key: 'pfps', text: 'PFPs in room', hint: '(no effect until profiles exist)' });
+  rows.push({
+    type: 'cycle', key: 'ui', text: 'UI style',
+    options: ['modern', 'classic'], labels: { modern: '2.0', classic: '1.0' },
+    hint: '(no visible change until 1.0 is merged in)',
+  });
+  rows.push({ type: 'head', text: 'language' });
+  rows.push({ type: 'radio', key: 'language', value: 'English', text: 'English' });
+  rows.push({ type: 'note', text: 'more languages come much later.' });
+  return rows;
+}
+
+function rowText(r) {
+  if (r.type === 'radio') return '(' + (settings[r.key] === r.value ? '*' : ' ') + ') ' + r.text;
+  if (r.type === 'toggle') return r.text + ': ' + (settings[r.key] ? 'ON' : 'OFF');
+  if (r.type === 'cycle') return r.text + ': ' + r.labels[settings[r.key]];
+  return r.text;
+}
+
+function setMsg(text) {
+  document.getElementById('set-msg').textContent = text;
+}
+
+function renderSettings() {
+  const body = document.getElementById('set-body');
+  body.innerHTML = '';
+  const rows = settingsRows();
+  set.selectable = rows.filter(r => SELECTABLE.includes(r.type));
+  const cursorRow = set.selectable[set.cur];
+  let cursorNode = null;
+
+  rows.forEach(r => {
+    const div = el('div', 'srow ' + r.type);
+    if (r.type === 'head') div.textContent = '— ' + r.text + ' —';
+    else if (r.type === 'label' || r.type === 'note') div.textContent = r.text;
+    else {
+      div.textContent = rowText(r);
+      if (r.hint) div.appendChild(el('span', 'dim small', '  ' + r.hint));
+      if (r.type === 'radio' && settings[r.key] === r.value) div.classList.add('active');
+      if (r === cursorRow) {
+        div.classList.add('on');
+        div.prepend(el('span', 'smark', '>'));
+        cursorNode = div;
+      }
+    }
+    body.appendChild(div);
+  });
+
+  if (set.cur === 0) document.getElementById('set-scroll').scrollTop = 0;
+  else if (cursorNode) cursorNode.scrollIntoView({ block: 'nearest' });
+}
+
+function openSettings() {
+  set.cur = 0;
+  setMsg('');
+  renderSettings();
+}
+
+function moveSetting(step) {
+  set.cur = (set.cur + step + set.selectable.length) % set.selectable.length;
+  renderSettings();
+}
+
+function activateSetting() {
+  const r = set.selectable[set.cur];
+  setMsg('');
+  if (r.type === 'radio') {
+    settings[r.key] = r.value;
+    if (r.key === 'theme') applyTheme();
+    if (r.key === 'size') applySize();
+  } else if (r.type === 'toggle') {
+    settings[r.key] = !settings[r.key];
+  } else if (r.type === 'cycle') {
+    const i = r.options.indexOf(settings[r.key]);
+    settings[r.key] = r.options[(i + 1) % r.options.length];
+    if (r.key === 'ui') applyUi();
+  } else if (r.type === 'link') {
+    setMsg('[system]: the custom theme editor is the next step.');
+  }
+  save();
+  renderSettings();
+}
+
+screens.settings = {
+  key: e => {
+    const key = e.key.toLowerCase();
+    if (key === 'arrowdown' || key === 's') moveSetting(1);
+    else if (key === 'arrowup' || key === 'w') moveSetting(-1);
+    else if (key === 'enter') activateSetting();
+    else if (key === 'escape') show('menu');
+  },
+  wheel: dir => moveSetting(dir),
+};
 
 // ---------- start ----------
+applyTheme();
+applyUi();
 render();
 boot();
