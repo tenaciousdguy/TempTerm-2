@@ -1257,7 +1257,10 @@ async function doSignin(v) {
 
   formMsg('signing in...', 'dim');
   const res = await fbSignIn(email, v.password);
-  if (res.error) return formMsg(res.error, 'err');
+  if (res.error) {
+    if (res.uid) me.uid = res.uid;
+    return formMsg(res.error, 'err');
+  }
   if (!res.profile) {
     me.uid = await fbSignOut();
     return formMsg('this account has no profile yet. contact the developer.', 'err');

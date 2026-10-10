@@ -2,6 +2,7 @@ import { initializeApp } from 'https://www.gstatic.com/firebasejs/12.14.0/fireba
 import {
   getAuth, signInAnonymously, signInWithEmailAndPassword, signOut,
   EmailAuthProvider, linkWithCredential, sendPasswordResetEmail, sendEmailVerification, reload,
+  deleteUser,
 } from 'https://www.gstatic.com/firebasejs/12.14.0/firebase-auth.js';
 import {
   getDatabase, ref, onValue, get, set, push, remove,
@@ -89,12 +90,22 @@ export async function fbSignUp({ username, display, email, password }) {
 }
 
 export async function fbSignIn(email, password) {
+  const guest = auth.currentUser && auth.currentUser.isAnonymous ? auth.currentUser : null;
+  let removed = false;
+  if (guest) {
+    try { await deleteUser(guest); removed = true; }
+    catch (err) { console.warn('could not remove guest account:', err.code); }
+  }
   try {
     const cred = await signInWithEmailAndPassword(auth, email, password);
     const profile = await fbLoadProfile(cred.user.uid);
     return { uid: cred.user.uid, profile };
   } catch (err) {
-    return { error: authError(err) };
+    let uid = null;
+    if (removed) {
+      try { uid = (await signInAnonymously(auth)).user.uid; } catch (e) { console.error(e); }
+    }
+    return { error: authError(err), uid };
   }
 }
 
