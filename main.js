@@ -1,4 +1,4 @@
-const { app, BrowserWindow, ipcMain } = require('electron');
+const { app, BrowserWindow, ipcMain, session } = require('electron');
 const path = require('path');
 
 if (process.env.TT_PROFILE) {
@@ -31,6 +31,16 @@ ipcMain.handle('set-window-size', (event, key) => {
   win.setSize(size[0], size[1]);
   win.center();
   win.setResizable(false);
+});
+
+ipcMain.handle('is-dev', () => !app.isPackaged);
+
+ipcMain.handle('reset-all', async event => {
+  if (app.isPackaged) return;
+  await session.defaultSession.clearStorageData();
+  await session.defaultSession.clearCache();
+  const win = BrowserWindow.fromWebContents(event.sender);
+  if (win) win.webContents.reloadIgnoringCache();
 });
 
 app.whenReady().then(createWindow);

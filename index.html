@@ -7,8 +7,8 @@
 </head>
 <body>
   <section id="splash" class="screen center">
-    <h1>TempTerm</h1>
-    <p class="dim italic">v2.0</p>
+    <h1 id="splash-title">TempTerm</h1>
+    <p id="splash-ver" class="dim italic">v2.0</p>
     <pre id="boot"></pre>
     <p id="tap" class="dim">tap to continue</p>
   </section>
@@ -22,6 +22,13 @@
     <nav id="menu-items"></nav>
     <p id="sys" class="dim small"></p>
     <div id="status" class="status small dim">● server: not connected</div>
+
+    <div id="tut" class="tut" hidden>
+      <div id="tut-spot" class="tut-spot"></div>
+      <div id="tut-tip" class="tut-tip"><span class="tut-arrow">←</span><span id="tut-text"></span></div>
+      <p id="tut-bar" class="tut-bar"></p>
+      <p id="tut-hint" class="tut-hint dim small"></p>
+    </div>
   </section>
 
   <section id="create" class="screen center" hidden>
@@ -70,6 +77,16 @@
     <p id="set-msg" class="setmsg dim small"></p>
     <p class="hint dim small">↑ ↓ / W S / scroll = move | Enter = choose | Escape = Back</p>
   </section>
+
+    <section id="themeedit" class="screen page" hidden>
+    <p class="ptitle">Custom Theme</p>
+    <p class="tsample">Sample: normal text, <span class="dim">dim text</span>, <span class="hl">highlight</span>, <span class="acc">accent</span></p>
+    <div id="te-body"></div>
+    <p id="te-msg" class="setmsg dim small"></p>
+    <p class="hint dim small">↑ ↓ / W S / scroll = move | Enter = edit or choose | Escape = Cancel</p>
+  </section>
+
+  <button id="dev-reset" class="devbtn" tabindex="-1" hidden>reset</button>
 
   <script type="module" src="renderer.js"></script>
 </body>

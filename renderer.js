@@ -3,7 +3,7 @@ import {
   fbCreateRoom, fbJoinRoom, fbLeaveRoom, fbCleanup,
   fbSendMessage, fbWatchRoom, fbListRooms,
 } from './firebase.js';
-import { settings, save, THEMES, SIZES, applyTheme, applyUi, applySize } from './settings.js';
+import { settings, save, THEMES, SIZES, applyTheme, applyColors, applyUi, applySize, getTheme, newThemeId } from './settings.js';
 
 // ---------- state ----------
 function randomGuestName() {
@@ -16,6 +16,7 @@ let room = null;
 let busy = false;
 let current = 'splash';
 let splashReady = false;
+const firstRun = localStorage.getItem('tutorialDone') !== '1';
 
 function el(tag, cls, text) {
   const node = document.createElement(tag);
@@ -46,7 +47,7 @@ document.addEventListener('wheel', e => {
 });
 
 document.addEventListener('click', () => {
-  if (current === 'splash' && splashReady) show('menu');
+  if (current === 'splash' && splashReady) leaveSplash();
 });
 
 // ---------- screens ----------
@@ -103,17 +104,24 @@ const steps = [
 async function boot() {
   const out = document.getElementById('boot');
   for (const step of steps) {
-    out.innerHTML += step.label + '...';
-    const [ok] = await Promise.all([step.run(), wait(300 + Math.random() * 900)]);
-    const text = step.okText ? step.okText() : 'ok';
-    out.innerHTML += ok ? ' <span class="ok">' + text + '</span>\n' : ' <span class="fail">failed</span>\n';
+    if (!firstRun) out.innerHTML += step.label + '...';
+    const [ok] = await Promise.all([step.run(), wait(firstRun ? 200 : 300 + Math.random() * 900)]);
+    if (!firstRun) {
+      const text = step.okText ? step.okText() : 'ok';
+      out.innerHTML += ok ? ' <span class="ok">' + text + '</span>\n' : ' <span class="fail">failed</span>\n';
+    }
   }
   document.getElementById('tap').classList.add('show');
   splashReady = true;
 }
 
+function leaveSplash() {
+  show('menu');
+  if (firstRun) startTutorial();
+}
+
 screens.splash = {
-  key: e => { if (splashReady && (e.key === 'Enter' || e.key === ' ')) show('menu'); },
+  key: e => { if (splashReady && (e.key === 'Enter' || e.key === ' ')) leaveSplash(); },
 };
 
 // ---------- menu ----------
@@ -199,12 +207,16 @@ function move(step) {
 
 screens.menu = {
   key: e => {
+    if (tut.active) return tutKey(e);
     const key = e.key.toLowerCase();
     if (key === 'arrowdown' || key === 's') move(1);
     else if (key === 'arrowup' || key === 'w') move(-1);
     else if (key === 'enter') activate();
   },
-  wheel: dir => move(dir),
+  wheel: dir => {
+    if (tut.active) return tutWheel(dir);
+    move(dir);
+  },
 };
 
 // ---------- create room ----------
@@ -698,15 +710,33 @@ screens.credits = {
 };
 
 // ---------- settings ----------
-const set = { selectable: [], cur: 0 };
-const SELECTABLE = ['radio', 'toggle', 'cycle', 'link'];
+const $ = id => document.getElementById(id);
+const set = { selectable: [], cur: 0, customOpen: false, flash: '', confirmDelete: null, pendingFocus: null };
+const SELECTABLE = ['radio', 'toggle', 'cycle', 'link', 'dropout'];
+
+function themeRows() {
+  const rows = [];
+  Object.keys(THEMES).forEach(name => rows.push({ type: 'radio', key: 'theme', value: name, text: name }));
+
+  const list = settings.custom;
+  const inline = list.length < 5;
+  if (!inline) {
+    rows.push({ type: 'dropout', text: (set.customOpen ? '[-]' : '[+]') + ' Custom Themes (' + list.length + ')' });
+  }
+  if (inline || set.customOpen) {
+    list.forEach(t => rows.push({
+      type: 'radio', key: 'theme', value: 'custom:' + t.id, text: t.name, custom: true, id: t.id, sub: !inline,
+    }));
+  }
+  rows.push({ type: 'link', value: 'new', text: '+ New Custom Theme' });
+  return rows;
+}
 
 function settingsRows() {
   const rows = [];
   rows.push({ type: 'head', text: 'appearance' });
   rows.push({ type: 'label', text: 'Theme' });
-  Object.keys(THEMES).forEach(name => rows.push({ type: 'radio', key: 'theme', value: name, text: name }));
-  rows.push({ type: 'link', text: '+ New Custom Theme' });
+  themeRows().forEach(r => rows.push(r));
   rows.push({ type: 'head', text: 'window' });
   rows.push({ type: 'label', text: 'Size (applies instantly)' });
   SIZES.forEach(size => rows.push({ type: 'radio', key: 'size', value: size, text: size }));
@@ -723,6 +753,10 @@ function settingsRows() {
   return rows;
 }
 
+function selectableRows() {
+  return settingsRows().filter(r => SELECTABLE.includes(r.type));
+}
+
 function rowText(r) {
   if (r.type === 'radio') return '(' + (settings[r.key] === r.value ? '*' : ' ') + ') ' + r.text;
   if (r.type === 'toggle') return r.text + ': ' + (settings[r.key] ? 'ON' : 'OFF');
@@ -730,20 +764,19 @@ function rowText(r) {
   return r.text;
 }
 
-function setMsg(text) {
-  document.getElementById('set-msg').textContent = text;
-}
-
 function renderSettings() {
-  const body = document.getElementById('set-body');
+  const body = $('set-body');
   body.innerHTML = '';
   const rows = settingsRows();
   set.selectable = rows.filter(r => SELECTABLE.includes(r.type));
+  set.cur = Math.max(0, Math.min(set.cur, set.selectable.length - 1));
   const cursorRow = set.selectable[set.cur];
-  let cursorNode = null;
 
+  applyTheme(cursorRow && cursorRow.key === 'theme' ? cursorRow.value : settings.theme);
+
+  let cursorNode = null;
   rows.forEach(r => {
-    const div = el('div', 'srow ' + r.type);
+    const div = el('div', 'srow ' + r.type + (r.sub ? ' sub' : ''));
     if (r.type === 'head') div.textContent = '— ' + r.text + ' —';
     else if (r.type === 'label' || r.type === 'note') div.textContent = r.text;
     else {
@@ -759,27 +792,40 @@ function renderSettings() {
     body.appendChild(div);
   });
 
-  if (set.cur === 0) document.getElementById('set-scroll').scrollTop = 0;
+  let msg = set.flash;
+  if (!msg && cursorRow && cursorRow.key === 'theme') {
+    msg = cursorRow.custom ? 'Enter = use | E = edit | Delete = remove' : 'Enter = use this theme';
+  }
+  $('set-msg').textContent = msg;
+
+  if (set.cur === 0) $('set-scroll').scrollTop = 0;
   else if (cursorNode) cursorNode.scrollIntoView({ block: 'nearest' });
 }
 
 function openSettings() {
-  set.cur = 0;
-  setMsg('');
+  set.flash = '';
+  set.confirmDelete = null;
+  const focus = set.pendingFocus || settings.theme;
+  set.pendingFocus = null;
+  if (focus.startsWith('custom:') && settings.custom.length >= 5) set.customOpen = true;
+  const idx = selectableRows().findIndex(r => r.value === focus);
+  set.cur = idx >= 0 ? idx : 0;
   renderSettings();
 }
 
 function moveSetting(step) {
+  set.flash = '';
+  set.confirmDelete = null;
   set.cur = (set.cur + step + set.selectable.length) % set.selectable.length;
   renderSettings();
 }
 
 function activateSetting() {
   const r = set.selectable[set.cur];
-  setMsg('');
+  set.flash = '';
+  set.confirmDelete = null;
   if (r.type === 'radio') {
     settings[r.key] = r.value;
-    if (r.key === 'theme') applyTheme();
     if (r.key === 'size') applySize();
   } else if (r.type === 'toggle') {
     settings[r.key] = !settings[r.key];
@@ -787,9 +833,36 @@ function activateSetting() {
     const i = r.options.indexOf(settings[r.key]);
     settings[r.key] = r.options[(i + 1) % r.options.length];
     if (r.key === 'ui') applyUi();
+  } else if (r.type === 'dropout') {
+    set.customOpen = !set.customOpen;
   } else if (r.type === 'link') {
-    setMsg('[system]: the custom theme editor is the next step.');
+    openThemeEdit(null);
+    show('themeedit');
+    return;
   }
+  save();
+  renderSettings();
+}
+
+function editSetting() {
+  const r = set.selectable[set.cur];
+  if (!r || !r.custom) return;
+  openThemeEdit(settings.custom.find(t => t.id === r.id));
+  show('themeedit');
+}
+
+function deleteSetting() {
+  const r = set.selectable[set.cur];
+  if (!r || !r.custom) return;
+  if (set.confirmDelete !== r.id) {
+    set.confirmDelete = r.id;
+    set.flash = 'press Delete again to remove "' + r.text + '".';
+    return renderSettings();
+  }
+  settings.custom = settings.custom.filter(t => t.id !== r.id);
+  if (settings.theme === 'custom:' + r.id) settings.theme = 'Default';
+  set.confirmDelete = null;
+  set.flash = 'deleted.';
   save();
   renderSettings();
 }
@@ -800,13 +873,351 @@ screens.settings = {
     if (key === 'arrowdown' || key === 's') moveSetting(1);
     else if (key === 'arrowup' || key === 'w') moveSetting(-1);
     else if (key === 'enter') activateSetting();
-    else if (key === 'escape') show('menu');
+    else if (key === 'e') editSetting();
+    else if (key === 'delete' || key === 'x' || key === 'backspace') deleteSetting();
+    else if (key === 'escape') { applyTheme(); show('menu'); }
   },
   wheel: dir => moveSetting(dir),
 };
 
+// ---------- theme editor ----------
+const EDIT_FIELDS = [
+  { key: 'bg', label: 'Background' },
+  { key: 'text', label: 'Text' },
+  { key: 'bright', label: 'Highlight' },
+  { key: 'dim', label: 'Dim text' },
+  { key: 'accent', label: 'Accent' },
+];
+const ed = { id: null, colors: {}, cur: 0, rows: [] };
+
+function markEditor() {
+  ed.rows.forEach((row, i) => row.classList.toggle('on', i === ed.cur));
+}
+
+function openThemeEdit(theme) {
+  ed.id = theme ? theme.id : null;
+  ed.colors = { ...(theme ? theme.colors : getTheme(settings.theme)) };
+  ed.cur = 0;
+  ed.rows = [];
+  $('te-msg').textContent = '';
+  const body = $('te-body');
+  body.innerHTML = '';
+
+  const addRow = build => {
+    const row = el('div', 'trow');
+    row.appendChild(el('span', 'smark', '>'));
+    build(row);
+    const i = ed.rows.length;
+    row.addEventListener('click', () => { ed.cur = i; markEditor(); });
+    body.appendChild(row);
+    ed.rows.push(row);
+    return row;
+  };
+
+  addRow(row => {
+    row.appendChild(el('span', 'tlabel', 'Name'));
+    const input = el('input', 'tname');
+    input.id = 'te-name';
+    input.type = 'text';
+    input.maxLength = 16;
+    input.placeholder = 'My Theme';
+    input.autocomplete = 'off';
+    input.spellcheck = false;
+    input.value = theme ? theme.name : '';
+    row.appendChild(input);
+  });
+
+  EDIT_FIELDS.forEach(f => addRow(row => {
+    row.appendChild(el('span', 'tlabel', f.label));
+    const input = el('input', 'tcolor');
+    input.type = 'color';
+    input.value = ed.colors[f.key];
+    const hex = el('span', 'dim', ed.colors[f.key]);
+    input.addEventListener('input', () => {
+      ed.colors[f.key] = input.value;
+      hex.textContent = input.value;
+      applyColors(ed.colors);
+    });
+    row.append(input, hex);
+  }));
+
+  addRow(row => row.appendChild(el('span', '', '[save]'))).addEventListener('click', saveThemeEdit);
+  addRow(row => row.appendChild(el('span', '', '[cancel]'))).addEventListener('click', cancelThemeEdit);
+
+  applyColors(ed.colors);
+  markEditor();
+}
+
+function moveEditor(step) {
+  if (document.activeElement && document.activeElement !== document.body) document.activeElement.blur();
+  ed.cur = (ed.cur + step + ed.rows.length) % ed.rows.length;
+  markEditor();
+}
+
+function closeThemeEdit(focus) {
+  applyTheme();
+  set.pendingFocus = focus;
+  show('settings');
+}
+
+function cancelThemeEdit() {
+  closeThemeEdit(ed.id ? 'custom:' + ed.id : 'new');
+}
+
+function saveThemeEdit() {
+  const nameEl = $('te-name');
+  const name = nameEl.value.trim();
+  if (!name) {
+    $('te-msg').textContent = '[system]: give your theme a name.';
+    ed.cur = 0;
+    markEditor();
+    nameEl.focus();
+    return;
+  }
+  let theme = ed.id && settings.custom.find(t => t.id === ed.id);
+  if (theme) {
+    theme.name = name;
+    theme.colors = { ...ed.colors };
+  } else {
+    theme = { id: newThemeId(), name, colors: { ...ed.colors } };
+    settings.custom.push(theme);
+  }
+  settings.theme = 'custom:' + theme.id;
+  save();
+  closeThemeEdit('custom:' + theme.id);
+}
+
+screens.themeedit = {
+  key: e => {
+    const nameEl = $('te-name');
+    if (document.activeElement === nameEl) {
+      if (e.key === 'Enter' || e.key === 'Escape') { e.preventDefault(); nameEl.blur(); }
+      else if (e.key === 'ArrowDown') { e.preventDefault(); moveEditor(1); }
+      else if (e.key === 'ArrowUp') { e.preventDefault(); moveEditor(-1); }
+      return;
+    }
+    const key = e.key.toLowerCase();
+    if (key === 'arrowdown' || key === 's') moveEditor(1);
+    else if (key === 'arrowup' || key === 'w') moveEditor(-1);
+    else if (key === 'escape') cancelThemeEdit();
+    else if (key === 'enter') {
+      e.preventDefault();
+      const last = ed.rows.length - 1;
+      if (ed.cur === 0) nameEl.focus();
+      else if (ed.cur <= EDIT_FIELDS.length) ed.rows[ed.cur].querySelector('.tcolor').click();
+      else if (ed.cur === last - 1) saveThemeEdit();
+      else cancelThemeEdit();
+    }
+  },
+  wheel: dir => moveEditor(dir),
+};
+
+// ---------- tutorial ----------
+const tut = { active: false, step: 0, steps: [], last: 0, shown: false, filled: false, timers: [] };
+const GAP = 350;
+
+const K = k => ({ k });
+
+function keyNodes(parts) {
+  const frag = document.createDocumentFragment();
+  parts.forEach(p => {
+    if (typeof p === 'string') frag.appendChild(document.createTextNode(p));
+    else frag.appendChild(el('span', 'kbd', p.k));
+  });
+  return frag;
+}
+
+function tutSteps() {
+  const label = i => () => document.querySelectorAll('#menu-items .item .label')[i];
+  const tour = (sel, i, text) => ({ type: 'enter', sel, target: label(i), text });
+  return [
+    { type: 'down', bar: ['Move down the menu: press ', K('↓'), ' or ', K('S'), ', or scroll down'] },
+    { type: 'up', bar: ['Now move back up: press ', K('↑'), ' or ', K('W'), ', or scroll up'] },
+    { type: 'enter', bar: ['Press ', K('Enter'), ' to select the highlighted item. First, a quick tour: press ', K('Enter')] },
+    tour(1, 0, 'Room Searcher: find rooms other people made, or join one with a code'),
+    tour(2, 1, 'Create Room: make your own room, public or private'),
+    tour(3, 2, 'Profile: your page, with your picture and bio (needs an account)'),
+    tour(4, 3, 'Settings: themes, window size and more'),
+    tour(5, 4, "Changelog: see what's new in TempTerm"),
+    tour(6, 5, 'Credits: the people behind TempTerm'),
+    tour(7, 6, 'Quit: close TempTerm'),
+    { type: 'enter', sel: 0, target: () => $('account'), text: "and here's where you make your account!", last: true },
+  ];
+}
+
+function clearTutTimers() {
+  tut.timers.forEach(clearTimeout);
+  tut.timers = [];
+}
+
+function setBar(parts) {
+  const bar = $('tut-bar');
+  bar.classList.remove('on');
+  tut.timers.push(setTimeout(() => {
+    bar.replaceChildren(keyNodes(parts));
+    bar.classList.add('on');
+  }, tut.filled ? 200 : 0));
+  tut.filled = true;
+}
+
+function startTutorial() {
+  tut.active = true;
+  tut.step = 0;
+  tut.steps = tutSteps();
+  tut.last = Date.now();
+  tut.shown = false;
+  tut.filled = false;
+  selected = 1;
+  render();
+  document.body.classList.add('tut-active');
+  $('tut-hint').textContent = 'Esc = skip tutorial';
+  $('tut').hidden = false;
+  void $('tut').offsetWidth;
+  $('tut').classList.add('show');
+  showTutStep();
+}
+
+function showTutStep() {
+  clearTutTimers();
+  const s = tut.steps[tut.step];
+  const spot = $('tut-spot');
+  const tip = $('tut-tip');
+  const text = $('tut-text');
+
+  setBar(s.bar || ['Press ', K('Enter'), s.last ? ' to finish' : ' to continue']);
+  if (s.sel !== undefined) { selected = s.sel; render(); }
+
+  if (!s.target) {
+    spot.classList.remove('on');
+    tip.classList.remove('on');
+    tut.shown = false;
+    return;
+  }
+
+  requestAnimationFrame(() => {
+    if (!tut.active) return;
+    const base = $('menu').getBoundingClientRect();
+    const r = s.target().getBoundingClientRect();
+    const left = r.left - base.left - 32;
+    const top = r.top - base.top - 6;
+    const width = r.width + 46;
+    const height = r.height + 12;
+    const fresh = !tut.shown;
+
+    if (fresh) { spot.classList.add('jump'); tip.classList.add('jump'); }
+    spot.style.width = width + 'px';
+    spot.style.height = height + 'px';
+    spot.style.transform = 'translate(' + left + 'px,' + top + 'px)';
+
+    const place = () => {
+      text.textContent = s.text;
+      tip.style.maxWidth = Math.max(160, base.width - (left + width + 20) - 24) + 'px';
+      const x = left + width + 20;
+      const y = top + height / 2 - tip.offsetHeight / 2;
+      tip.style.transform = 'translate(' + x + 'px,' + y + 'px)';
+      text.classList.remove('out');
+      tip.classList.add('on');
+    };
+
+    if (fresh) place();
+    else {
+      text.classList.add('out');
+      tut.timers.push(setTimeout(place, 180));
+    }
+
+    if (fresh) {
+      void spot.offsetWidth;
+      spot.classList.remove('jump');
+      tip.classList.remove('jump');
+      tut.shown = true;
+    }
+    spot.classList.add('on');
+  });
+}
+
+function canAct() {
+  return Date.now() - tut.last >= GAP;
+}
+
+function tutAdvance() {
+  tut.last = Date.now();
+  if (tut.step === tut.steps.length - 1) return endTutorial();
+  tut.step++;
+  showTutStep();
+}
+
+function endTutorial() {
+  tut.active = false;
+  clearTutTimers();
+  localStorage.setItem('tutorialDone', '1');
+  document.body.classList.remove('tut-active');
+  $('tut').classList.remove('show');
+  setTimeout(() => { if (!tut.active) $('tut').hidden = true; }, 450);
+  selected = 1;
+  render();
+  say("[system]: account setup isn't built yet.");
+}
+
+function tutNope() {
+  const bar = $('tut-bar');
+  bar.classList.remove('nope');
+  void bar.offsetWidth;
+  bar.classList.add('nope');
+}
+
+function tutKey(e) {
+  e.preventDefault();
+  if (e.repeat) return;
+  const key = e.key.toLowerCase();
+  if (['shift', 'control', 'alt', 'meta', 'capslock'].includes(key)) return;
+  if (key === 'escape') return endTutorial();
+
+  const s = tut.steps[tut.step];
+  const down = key === 'arrowdown' || key === 's';
+  const up = key === 'arrowup' || key === 'w';
+  const match = (s.type === 'down' && down) || (s.type === 'up' && up) || (s.type === 'enter' && key === 'enter');
+
+  if (!canAct()) return;
+  if (!match) return tutNope();
+  if (s.type === 'down') move(1);
+  if (s.type === 'up') move(-1);
+  tutAdvance();
+}
+
+function tutWheel(dir) {
+  const s = tut.steps[tut.step];
+  if (!canAct()) return;
+  if (s.type === 'down' && dir > 0) { move(1); tutAdvance(); }
+  else if (s.type === 'up' && dir < 0) { move(-1); tutAdvance(); }
+}
+
+// ---------- dev reset ----------
+const devBtn = $('dev-reset');
+let devArmed = null;
+
+if (window.tt && window.tt.isDev) {
+  window.tt.isDev().then(on => { devBtn.hidden = !on; });
+}
+
+devBtn.addEventListener('click', e => {
+  e.stopPropagation();
+  devBtn.blur();
+  if (!devArmed) {
+    devBtn.textContent = 'click again to wipe ALL data';
+    devArmed = setTimeout(() => { devArmed = null; devBtn.textContent = 'reset'; }, 3000);
+    return;
+  }
+  clearTimeout(devArmed);
+  devBtn.textContent = 'resetting...';
+  window.tt.resetAll();
+});
+
 // ---------- start ----------
 applyTheme();
 applyUi();
+if (firstRun) {
+  document.getElementById('splash-title').textContent = 'Welcome to TempTerm!';
+  document.getElementById('splash-ver').hidden = true;
+}
 render();
 boot();

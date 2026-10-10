@@ -9,6 +9,9 @@ export const THEMES = {
 
 export const SIZES = ['800x600', '1024x768', '1280x720'];
 
+const COLOR_KEYS = ['bg', 'text', 'bright', 'dim', 'accent'];
+const HEX = /^#[0-9a-f]{6}$/i;
+
 const DEFAULTS = {
   theme: 'Default',
   size: '800x600',
@@ -17,12 +20,21 @@ const DEFAULTS = {
   language: 'English',
 };
 
+function validTheme(t) {
+  return t
+    && typeof t.id === 'string'
+    && typeof t.name === 'string'
+    && t.colors
+    && COLOR_KEYS.every(k => HEX.test(t.colors[k]));
+}
+
 function load() {
-  try {
-    return { ...DEFAULTS, ...JSON.parse(localStorage.getItem('settings') || '{}') };
-  } catch {
-    return { ...DEFAULTS };
-  }
+  let saved = {};
+  try { saved = JSON.parse(localStorage.getItem('settings') || '{}'); } catch { saved = {}; }
+  if (!saved || typeof saved !== 'object') saved = {};
+  const s = { ...DEFAULTS, ...saved };
+  s.custom = Array.isArray(saved.custom) ? saved.custom.filter(validTheme) : [];
+  return s;
 }
 
 export const settings = load();
@@ -31,14 +43,30 @@ export function save() {
   localStorage.setItem('settings', JSON.stringify(settings));
 }
 
-export function applyTheme() {
-  const t = THEMES[settings.theme] || THEMES.Default;
+export function newThemeId() {
+  return Date.now().toString(36) + Math.random().toString(36).slice(2, 6);
+}
+
+export function getTheme(id) {
+  if (THEMES[id]) return THEMES[id];
+  if (typeof id === 'string' && id.startsWith('custom:')) {
+    const found = settings.custom.find(t => 'custom:' + t.id === id);
+    if (found) return found.colors;
+  }
+  return THEMES.Default;
+}
+
+export function applyColors(t) {
   const root = document.documentElement.style;
   root.setProperty('--bg', t.bg);
   root.setProperty('--text', t.text);
   root.setProperty('--bright', t.bright);
   root.setProperty('--dim', t.dim);
   root.setProperty('--accent', t.accent);
+}
+
+export function applyTheme(id = settings.theme) {
+  applyColors(getTheme(id));
 }
 
 export function applyUi() {
