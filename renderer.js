@@ -1,5 +1,6 @@
 import {
-  watchConnection, signInGuest,
+  watchConnection, fbInit, fbLoadProfile, fbUsernameFree, fbSignUp, fbSignIn, fbSignOut, fbSendReset,
+  fbEmailVerified, fbResendVerification,
   fbCreateRoom, fbJoinRoom, fbLeaveRoom, fbCleanup,
   fbSendMessage, fbWatchRoom, fbListRooms,
 } from './firebase.js';
@@ -51,11 +52,21 @@ document.addEventListener('click', () => {
 });
 
 // ---------- screens ----------
+let verifyTimer = null;
+
 function show(id) {
   clearInterval(search.timer);
+  clearInterval(verifyTimer);
   current = id;
   document.querySelectorAll('.screen').forEach(s => s.hidden = s.id !== id);
-  if (id === 'menu' && !account) me.name = randomGuestName();
+  if (id === 'menu') {
+    if (!account) me.name = randomGuestName();
+    render();
+    if (account && !account.verified) {
+      checkVerified();
+      verifyTimer = setInterval(checkVerified, 20000);
+    }
+  }
   if (id === 'create') { create.step = 0; create.type = 0; create.limit = 10; busy = false; renderCreate(); }
   if (id === 'search') openSearch();
   if (id === 'chat') enterChat();
@@ -90,7 +101,13 @@ const steps = [
   { label: 'signing in',
     run: async () => {
       try {
-        me.uid = await signInGuest();
+        const info = await fbInit();
+        me.uid = info.uid;
+        if (!info.anonymous) {
+          const profile = await fbLoadProfile(info.uid);
+          if (profile) { setAccount(info.uid, profile); account.verified = await fbEmailVerified(); }
+          else me.uid = await fbSignOut();
+        }
         const last = localStorage.getItem('lastRoom');
         if (last) { await fbCleanup(last).catch(() => {}); localStorage.removeItem('lastRoom'); }
         return true;
@@ -177,6 +194,7 @@ function renderMenu() {
 function render() {
   renderAccount();
   renderMenu();
+  renderVerify();
 }
 
 function say(text) {
@@ -186,7 +204,7 @@ function say(text) {
 function activate() {
   say('');
   if (selected === 0) {
-    say(account ? "[system]: log out isn't built yet." : "[system]: sign in isn't built yet.");
+    if (account) logout(); else openSignin();
     return;
   }
   const item = items[selected - 1];
@@ -212,6 +230,7 @@ screens.menu = {
     if (key === 'arrowdown' || key === 's') move(1);
     else if (key === 'arrowup' || key === 'w') move(-1);
     else if (key === 'enter') activate();
+    else if (key === 'v') resendVerify();
   },
   wheel: dir => {
     if (tut.active) return tutWheel(dir);
@@ -1012,6 +1031,308 @@ screens.themeedit = {
   wheel: dir => moveEditor(dir),
 };
 
+// ---------- accounts ----------
+const USERNAME_RE = /^[A-Za-z0-9_]{3,16}$/;
+const RESERVED_RE = /^(admin|dev|mod|moderator|tempterm|system|staff|owner|guest.*)$/i;
+const EMAIL_RE = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
+
+function setAccount(uid, profile) {
+  account = { uid, username: profile.username, display: profile.display, verified: false };
+  me.uid = uid;
+  me.name = profile.display;
+}
+
+async function logout() {
+  say('');
+  try {
+    me.uid = await fbSignOut();
+    account = null;
+    me.name = randomGuestName();
+    render();
+    say('[system]: logged out. you are a guest again.');
+  } catch (e) {
+    console.error(e);
+    say('[system]: could not log out.');
+  }
+}
+
+function finishAuth(text) {
+  show('menu');
+  say(text);
+}
+
+const form = { cfg: null, rows: [], cur: 0, busy: false, token: 0 };
+
+function formMsg(text, kind) {
+  const m = $('f-msg');
+  m.textContent = text;
+  m.className = 'setmsg small ' + (kind === 'err' ? 'fail' : kind === 'ok' ? 'ok' : 'dim');
+}
+
+function formValues() {
+  const v = {};
+  form.rows.forEach(r => { if (r.field) v[r.field.key] = r.input.value; });
+  return v;
+}
+
+function formFocus(i) {
+  form.cur = i;
+  form.rows.forEach((r, n) => r.row.classList.toggle('on', n === i));
+  const r = form.rows[i];
+  if (r.input) r.input.focus();
+  else if (document.activeElement && document.activeElement !== document.body) document.activeElement.blur();
+  r.row.scrollIntoView({ block: 'nearest' });
+}
+
+function formMove(step) {
+  formFocus((form.cur + step + form.rows.length) % form.rows.length);
+}
+
+function openForm(cfg) {
+  form.cfg = cfg;
+  form.rows = [];
+  form.busy = false;
+  form.token++;
+  $('f-title').textContent = cfg.title;
+  $('f-corner').hidden = !cfg.corner;
+  const body = $('f-body');
+  body.innerHTML = '';
+
+  cfg.fields.forEach(f => {
+    const row = el('div', 'trow');
+    row.appendChild(el('span', 'smark', '>'));
+    row.appendChild(el('span', 'tlabel', f.label));
+    const input = el('input', 'tname');
+    input.type = f.type;
+    input.maxLength = f.max || 64;
+    input.autocomplete = 'off';
+    input.spellcheck = false;
+    row.appendChild(input);
+    const note = el('span', 'fnote dim');
+    row.appendChild(note);
+    if (f.onInput) input.addEventListener('input', () => f.onInput(input.value, note));
+    const i = form.rows.length;
+    row.addEventListener('click', () => formFocus(i));
+    body.appendChild(row);
+    form.rows.push({ row, input, field: f, note });
+  });
+
+  cfg.buttons.forEach(b => {
+    const row = el('div', 'trow');
+    row.appendChild(el('span', 'smark', '>'));
+    row.appendChild(el('span', '', b.label));
+    const i = form.rows.length;
+    row.addEventListener('click', () => { formFocus(i); b.action(); });
+    body.appendChild(row);
+    form.rows.push({ row, button: b });
+  });
+
+  show('form');
+  $('f-scroll').scrollTop = 0;
+  formMsg(cfg.intro || '', 'dim');
+  formFocus(0);
+}
+
+async function formSubmit() {
+  if (form.busy) return;
+  form.busy = true;
+  try { await form.cfg.submit(formValues()); }
+  catch (e) { console.error(e); formMsg('something went wrong. try again.', 'err'); }
+  form.busy = false;
+}
+
+function formEnter() {
+  const r = form.rows[form.cur];
+  if (r.button) return r.button.action();
+  const inputs = form.rows.filter(x => x.input);
+  if (r === inputs[inputs.length - 1]) return formSubmit();
+  formMove(1);
+}
+
+screens.form = {
+  key: e => {
+    const r = form.rows[form.cur];
+    const typing = !!(r && r.input);
+    const key = e.key.toLowerCase();
+    if (key === 'arrowdown' || (!typing && key === 's')) { e.preventDefault(); formMove(1); }
+    else if (key === 'arrowup' || (!typing && key === 'w')) { e.preventDefault(); formMove(-1); }
+    else if (key === 'tab') { e.preventDefault(); formMove(e.shiftKey ? -1 : 1); }
+    else if (key === 'enter') { e.preventDefault(); formEnter(); }
+    else if (key === 'escape') form.cfg.back();
+  },
+  wheel: dir => formMove(dir),
+};
+
+$('f-corner').addEventListener('click', () => openSignin());
+
+let nameTimer = null;
+
+function checkUsername(value, note) {
+  clearTimeout(nameTimer);
+  const name = value.trim();
+  const token = ++form.token;
+  const say2 = (text, cls) => { note.textContent = text; note.className = 'fnote ' + cls; };
+  if (!name) return say2('', 'dim');
+  if (!USERNAME_RE.test(name)) return say2('3-16 letters, numbers or _', 'fail');
+  if (RESERVED_RE.test(name)) return say2('that name is reserved', 'fail');
+  say2('checking...', 'dim');
+  nameTimer = setTimeout(async () => {
+    try {
+      const free = await fbUsernameFree(name);
+      if (token === form.token) say2(free ? 'available' : 'taken', free ? 'ok' : 'fail');
+    } catch {
+      if (token === form.token) say2('', 'dim');
+    }
+  }, 400);
+}
+
+function openSignup() {
+  openForm({
+    title: 'Create your account',
+    corner: true,
+    intro: 'pick a unique username, a display name for chat, and your email.',
+    back: () => show('menu'),
+    fields: [
+      { key: 'username', label: 'Username', type: 'text', max: 16, onInput: checkUsername },
+      { key: 'display', label: 'Display name', type: 'text', max: 20 },
+      { key: 'email', label: 'Email', type: 'text', max: 100 },
+      { key: 'password', label: 'Password', type: 'password', max: 64 },
+      { key: 'confirm', label: 'Confirm password', type: 'password', max: 64 },
+    ],
+    buttons: [
+      { label: '[create account]', action: formSubmit },
+      { label: '[I already have an account]', action: openSignin },
+      { label: '[continue as guest]', action: () => show('menu') },
+    ],
+    submit: doSignup,
+  });
+}
+
+async function doSignup(v) {
+  const username = v.username.trim();
+  const display = v.display.trim() || username;
+  const email = v.email.trim();
+  const fail = (text, row) => { formMsg(text, 'err'); formFocus(row); };
+  if (!USERNAME_RE.test(username)) return fail('username: 3-16 letters, numbers or _', 0);
+  if (RESERVED_RE.test(username)) return fail('that username is reserved.', 0);
+  if (display.length > 20) return fail('display name: 20 characters max.', 1);
+  if (!EMAIL_RE.test(email)) return fail('that email address does not look right.', 2);
+  if (v.password.length < 8) return fail('password: at least 8 characters.', 3);
+  if (v.password !== v.confirm) return fail('the passwords do not match.', 4);
+
+  formMsg('creating your account...', 'dim');
+  const res = await fbSignUp({ username, display, email, password: v.password });
+  if (res.error) return formMsg(res.error, 'err');
+  setAccount(res.uid, res.profile);
+  finishAuth('[system]: welcome, ' + res.profile.display + '! check your email to verify your address.');
+}
+
+function openSignin() {
+  openForm({
+    title: 'Sign in',
+    corner: false,
+    intro: 'use the email you signed up with. (username sign-in is not available yet.)',
+    back: () => show('menu'),
+    fields: [
+      { key: 'email', label: 'Email', type: 'text', max: 100 },
+      { key: 'password', label: 'Password', type: 'password', max: 64 },
+    ],
+    buttons: [
+      { label: '[sign in]', action: formSubmit },
+      { label: '[forgot your password?]', action: openForgot },
+      { label: '[create an account]', action: openSignup },
+      { label: '[continue as guest]', action: () => show('menu') },
+    ],
+    submit: doSignin,
+  });
+}
+
+async function doSignin(v) {
+  const email = v.email.trim();
+  if (!email.includes('@')) {
+    formMsg('use your email to sign in. username sign-in is not available yet.', 'err');
+    return formFocus(0);
+  }
+  if (!v.password) { formMsg('enter your password.', 'err'); return formFocus(1); }
+
+  formMsg('signing in...', 'dim');
+  const res = await fbSignIn(email, v.password);
+  if (res.error) return formMsg(res.error, 'err');
+  if (!res.profile) {
+    me.uid = await fbSignOut();
+    return formMsg('this account has no profile yet. contact the developer.', 'err');
+  }
+  setAccount(res.uid, res.profile);
+  account.verified = await fbEmailVerified();
+  finishAuth('[system]: signed in as ' + res.profile.display + '.');
+}
+
+function openForgot() {
+  openForm({
+    title: 'Reset your password',
+    corner: false,
+    intro: "enter your account's email and we'll send a reset link.",
+    back: openSignin,
+    fields: [{ key: 'email', label: 'Email', type: 'text', max: 100 }],
+    buttons: [
+      { label: '[send reset link]', action: formSubmit },
+      { label: '[back to sign in]', action: openSignin },
+    ],
+    submit: async v => {
+      const email = v.email.trim();
+      if (!EMAIL_RE.test(email)) return formMsg('that email address does not look right.', 'err');
+      formMsg('sending...', 'dim');
+      const res = await fbSendReset(email);
+      if (res.error) return formMsg(res.error, 'err');
+      formMsg('if that email has an account, a reset link is on its way. check spam too.', 'ok');
+    },
+  });
+}
+
+// ---------- email verification ----------
+const verify = { state: 'idle', until: 0, text: '' };
+
+function renderVerify() {
+  const box = $('verify');
+  const visible = !!account && !account.verified && current === 'menu' && !tut.active;
+  box.hidden = !visible;
+  if (!visible) return;
+  const idle = verify.state === 'idle';
+  $('verify-text').textContent = idle ? 'make sure to verify your email! ' : verify.text;
+  $('verify-link').hidden = !idle;
+  $('verify-key').hidden = !idle;
+}
+
+async function checkVerified() {
+  if (!account || account.verified) return;
+  account.verified = await fbEmailVerified();
+  renderVerify();
+}
+
+function setVerifyState(state, text, ms) {
+  verify.state = state;
+  verify.text = text || '';
+  renderVerify();
+  if (ms) setTimeout(() => { verify.state = 'idle'; renderVerify(); }, ms);
+}
+
+async function resendVerify() {
+  if (!account || account.verified || verify.state !== 'idle') return;
+  if (Date.now() < verify.until) {
+    return setVerifyState('note', 'please wait a minute before sending another one.', 3500);
+  }
+  verify.until = Date.now() + 60000;
+  setVerifyState('note', 'sending...');
+  const res = await fbResendVerification();
+  if (res.error) {
+    verify.until = 0;
+    return setVerifyState('note', res.error, 5000);
+  }
+  setVerifyState('note', 'verification email sent! check your inbox and your spam folder.', 6000);
+}
+
+$('verify-link').addEventListener('click', e => { e.stopPropagation(); resendVerify(); });
+
 // ---------- tutorial ----------
 const tut = { active: false, step: 0, steps: [], last: 0, shown: false, filled: false, timers: [] };
 const GAP = 350;
@@ -1155,7 +1476,7 @@ function endTutorial() {
   setTimeout(() => { if (!tut.active) $('tut').hidden = true; }, 450);
   selected = 1;
   render();
-  say("[system]: account setup isn't built yet.");
+  openSignup();
 }
 
 function tutNope() {

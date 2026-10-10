@@ -21,6 +21,9 @@
     </div>
     <nav id="menu-items"></nav>
     <p id="sys" class="dim small"></p>
+
+        <p id="verify" class="verify" hidden><span id="verify-text"></span><span id="verify-link" class="vlink">[resend verification email]</span><span id="verify-key" class="dim small"> press V</span></p>
+    
     <div id="status" class="status small dim">● server: not connected</div>
 
     <div id="tut" class="tut" hidden>
@@ -87,6 +90,14 @@
   </section>
 
   <button id="dev-reset" class="devbtn" tabindex="-1" hidden>reset</button>
+
+    <section id="form" class="screen page" hidden>
+    <p id="f-title" class="ptitle"></p>
+    <p id="f-corner" class="fcorner dim small" hidden>already have an account? <span class="flink">click here</span></p>
+    <div id="f-scroll" class="scrollbody"><div id="f-body"></div></div>
+    <p id="f-msg" class="setmsg small"></p>
+    <p class="hint dim small">↑ ↓ / Tab = move | Enter = next or choose | Escape = Back</p>
+  </section>
 
   <script type="module" src="renderer.js"></script>
 </body>

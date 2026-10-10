@@ -344,3 +344,19 @@ nav { width: 330px; }
   cursor: pointer;
 }
 .devbtn[hidden] { display: none; }
+
+.fcorner { position: absolute; top: 28px; right: 32px; }
+.flink { color: var(--bright); text-decoration: underline; cursor: pointer; }
+#form .tlabel { width: 170px; }
+#form .tname { width: 260px; }
+.fnote { font-size: 12px; }
+.fnote.ok { color: #4ade80; }
+.fnote.fail { color: #f87171; }
+.setmsg { right: 32px; }
+.setmsg.ok { color: #4ade80; }
+.setmsg.fail { color: #f87171; }
+
+.verify { position: absolute; left: 16px; bottom: 10px; font-size: 12px; color: #facc15; text-align: left; }
+.verify[hidden] { display: none; }
+.vlink { cursor: pointer; text-decoration: underline; }
+.tut-active .verify { display: none; }

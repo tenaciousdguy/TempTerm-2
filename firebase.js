@@ -1,5 +1,8 @@
 import { initializeApp } from 'https://www.gstatic.com/firebasejs/12.14.0/firebase-app.js';
-import { getAuth, signInAnonymously } from 'https://www.gstatic.com/firebasejs/12.14.0/firebase-auth.js';
+import {
+  getAuth, signInAnonymously, signInWithEmailAndPassword, signOut,
+  EmailAuthProvider, linkWithCredential, sendPasswordResetEmail, sendEmailVerification, reload,
+} from 'https://www.gstatic.com/firebasejs/12.14.0/firebase-auth.js';
 import {
   getDatabase, ref, onValue, get, set, push, remove,
   onChildAdded, onDisconnect, serverTimestamp,
@@ -27,9 +30,103 @@ export function watchConnection(callback) {
   );
 }
 
-export async function signInGuest() {
-  const cred = await signInAnonymously(auth);
-  return cred.user.uid;
+function authError(err) {
+  console.error(err);
+  const map = {
+    'auth/email-already-in-use': 'that email already has an account. try signing in.',
+    'auth/credential-already-in-use': 'that email already has an account. try signing in.',
+    'auth/invalid-email': 'that email address does not look right.',
+    'auth/weak-password': 'password is too weak. use at least 8 characters.',
+    'auth/invalid-credential': 'wrong email or password.',
+    'auth/wrong-password': 'wrong email or password.',
+    'auth/user-not-found': 'wrong email or password.',
+    'auth/too-many-requests': 'too many tries. wait a few minutes and try again.',
+    'auth/network-request-failed': 'could not reach the server. check your connection.',
+    'auth/operation-not-allowed': 'email sign-in is not switched on in Firebase yet.',
+  };
+  return map[err.code] || 'something went wrong. (' + err.code + ')';
+}
+
+export async function fbInit() {
+  await auth.authStateReady();
+  if (!auth.currentUser) await signInAnonymously(auth);
+  const user = auth.currentUser;
+  return { uid: user.uid, anonymous: user.isAnonymous };
+}
+
+export async function fbLoadProfile(uid) {
+  const snap = await get(ref(db, `users/${uid}`));
+  return snap.exists() ? snap.val() : null;
+}
+
+export async function fbUsernameFree(name) {
+  const snap = await get(ref(db, `usernames/${name.toLowerCase()}`));
+  return !snap.exists();
+}
+
+export async function fbSignUp({ username, display, email, password }) {
+  const user = auth.currentUser;
+  const lower = username.toLowerCase();
+  try {
+    await set(ref(db, `usernames/${lower}`), user.uid);
+  } catch {
+    return { error: 'that username is taken or not allowed.' };
+  }
+  try {
+    await linkWithCredential(user, EmailAuthProvider.credential(email, password));
+  } catch (err) {
+    await remove(ref(db, `usernames/${lower}`)).catch(() => {});
+    return { error: authError(err) };
+  }
+  try {
+    await set(ref(db, `users/${user.uid}`), { username, display, created: serverTimestamp() });
+  } catch (err) {
+    console.error(err);
+    return { error: 'account created, but the profile could not be saved. try signing in.' };
+  }
+  sendEmailVerification(user).catch(() => {});
+  return { uid: user.uid, profile: { username, display } };
+}
+
+export async function fbSignIn(email, password) {
+  try {
+    const cred = await signInWithEmailAndPassword(auth, email, password);
+    const profile = await fbLoadProfile(cred.user.uid);
+    return { uid: cred.user.uid, profile };
+  } catch (err) {
+    return { error: authError(err) };
+  }
+}
+
+export async function fbSignOut() {
+  await signOut(auth);
+  await signInAnonymously(auth);
+  return auth.currentUser.uid;
+}
+
+export async function fbSendReset(email) {
+  try {
+    await sendPasswordResetEmail(auth, email);
+    return {};
+  } catch (err) {
+    return { error: authError(err) };
+  }
+}
+
+export async function fbEmailVerified() {
+  const user = auth.currentUser;
+  if (!user || user.isAnonymous) return true;
+  try { await reload(user); } catch (err) { console.error(err); }
+  return user.emailVerified;
+}
+
+export async function fbResendVerification() {
+  try {
+    await sendEmailVerification(auth.currentUser);
+    return {};
+  } catch (err) {
+    return { error: authError(err) };
+  }
 }
 
 // ---------- rooms ----------
