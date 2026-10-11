@@ -1,5 +1,5 @@
 import {
-  watchConnection, fbInit, fbLoadProfile, fbUsernameFree, fbSignUp, fbSignIn, fbSignOut, fbSendReset,
+  watchConnection, fbInit, fbLoadProfile, fbSaveProfile, fbUsernameFree, fbSignUp, fbSignIn, fbSignOut, fbSendReset,
   fbEmailVerified, fbResendVerification,
   fbCreateRoom, fbJoinRoom, fbLeaveRoom, fbCleanup,
   fbSendMessage, fbWatchRoom, fbListRooms,
@@ -72,6 +72,7 @@ function show(id) {
   if (id === 'chat') enterChat();
   if (id === 'changelog') { oldOpen = false; renderChangelog(); document.getElementById('cl-scroll').scrollTop = 0; }
   if (id === 'settings') openSettings();
+  if (id === 'profile') renderProfile();
 }
 
 // ---------- boot ----------
@@ -606,6 +607,9 @@ const changelog = {
     'Rebuilt from scratch',
     'New boot screen',
     'Guest mode: a fresh guest name every time you load the menu',
+    'Accounts / Profiles',
+    'Tutorial when you first open the app',
+    'Settings re-built',
   ],
   old: [
     { v: '1.5', notes: [
@@ -692,7 +696,7 @@ function renderChangelog() {
   const body = document.getElementById('cl-body');
   body.innerHTML = '';
 
-  body.appendChild(el('p', 'vhead first ok', '2.0 Updates:'));
+  body.appendChild(el('p', 'vhead first ok', '2.0 PR 1 Updates:'));
   changelog.current.forEach(note => body.appendChild(el('p', 'ok', '- ' + note)));
 
   const toggle = el('p', 'toggle', '> ' + (oldOpen ? '[-]' : '[+]') + ' 1.x Updates:');
@@ -1037,7 +1041,7 @@ const RESERVED_RE = /^(admin|dev|mod|moderator|tempterm|system|staff|owner|guest
 const EMAIL_RE = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
 
 function setAccount(uid, profile) {
-  account = { uid, username: profile.username, display: profile.display, verified: false };
+  account = { uid, username: profile.username, display: profile.display, verified: false, profile };
   me.uid = uid;
   me.name = profile.display;
 }
@@ -1075,9 +1079,13 @@ function formValues() {
   return v;
 }
 
-function formFocus(i) {
+function formMark(i) {
   form.cur = i;
   form.rows.forEach((r, n) => r.row.classList.toggle('on', n === i));
+}
+
+function formFocus(i) {
+  formMark(i);
   const r = form.rows[i];
   if (r.input) r.input.focus();
   else if (document.activeElement && document.activeElement !== document.body) document.activeElement.blur();
@@ -1097,39 +1105,41 @@ function openForm(cfg) {
   $('f-corner').hidden = !cfg.corner;
   const body = $('f-body');
   body.innerHTML = '';
+  const card = el('div', 'fcard');
+  body.appendChild(card);
+  if (cfg.intro) card.appendChild(el('p', 'fintro dim small', cfg.intro));
 
   cfg.fields.forEach(f => {
-    const row = el('div', 'trow');
-    row.appendChild(el('span', 'smark', '>'));
-    row.appendChild(el('span', 'tlabel', f.label));
-    const input = el('input', 'tname');
+    const row = el('div', 'frow');
+    row.appendChild(el('label', 'flabel', f.label));
+    const input = el('input', 'finput');
     input.type = f.type;
     input.maxLength = f.max || 64;
     input.autocomplete = 'off';
     input.spellcheck = false;
-    row.appendChild(input);
     const note = el('span', 'fnote dim');
-    row.appendChild(note);
+    row.append(input, note);
     if (f.onInput) input.addEventListener('input', () => f.onInput(input.value, note));
     const i = form.rows.length;
-    row.addEventListener('click', () => formFocus(i));
-    body.appendChild(row);
+    input.addEventListener('focus', () => formMark(i));
+    card.appendChild(row);
     form.rows.push({ row, input, field: f, note });
   });
 
-  cfg.buttons.forEach(b => {
-    const row = el('div', 'trow');
-    row.appendChild(el('span', 'smark', '>'));
-    row.appendChild(el('span', '', b.label));
+  const btns = el('div', 'fbtns');
+  card.appendChild(btns);
+  cfg.buttons.forEach((b, n) => {
+    const btn = el('button', 'fbtn ' + (n === 0 ? 'primary' : 'link'), b.label);
+    btn.tabIndex = -1;
     const i = form.rows.length;
-    row.addEventListener('click', () => { formFocus(i); b.action(); });
-    body.appendChild(row);
-    form.rows.push({ row, button: b });
+    btn.addEventListener('click', () => { btn.blur(); formMark(i); b.action(); });
+    btns.appendChild(btn);
+    form.rows.push({ row: btn, button: b });
   });
 
   show('form');
   $('f-scroll').scrollTop = 0;
-  formMsg(cfg.intro || '', 'dim');
+  formMsg('', 'dim');
   formFocus(0);
 }
 
@@ -1200,9 +1210,9 @@ function openSignup() {
       { key: 'confirm', label: 'Confirm password', type: 'password', max: 64 },
     ],
     buttons: [
-      { label: '[create account]', action: formSubmit },
-      { label: '[I already have an account]', action: openSignin },
-      { label: '[continue as guest]', action: () => show('menu') },
+      { label: 'Create account', action: formSubmit },
+      { label: 'I already have an account', action: openSignin },
+      { label: 'Continue as guest', action: () => show('menu') },
     ],
     submit: doSignup,
   });
@@ -1223,7 +1233,8 @@ async function doSignup(v) {
   formMsg('creating your account...', 'dim');
   const res = await fbSignUp({ username, display, email, password: v.password });
   if (res.error) return formMsg(res.error, 'err');
-  setAccount(res.uid, res.profile);
+  const full = await fbLoadProfile(res.uid);
+  setAccount(res.uid, full || res.profile);
   finishAuth('[system]: welcome, ' + res.profile.display + '! check your email to verify your address.');
 }
 
@@ -1238,10 +1249,10 @@ function openSignin() {
       { key: 'password', label: 'Password', type: 'password', max: 64 },
     ],
     buttons: [
-      { label: '[sign in]', action: formSubmit },
-      { label: '[forgot your password?]', action: openForgot },
-      { label: '[create an account]', action: openSignup },
-      { label: '[continue as guest]', action: () => show('menu') },
+      { label: 'Sign in', action: formSubmit },
+      { label: 'Forgot your password?', action: openForgot },
+      { label: 'Create an account', action: openSignup },
+      { label: 'Continue as guest', action: () => show('menu') },
     ],
     submit: doSignin,
   });
@@ -1278,8 +1289,8 @@ function openForgot() {
     back: openSignin,
     fields: [{ key: 'email', label: 'Email', type: 'text', max: 100 }],
     buttons: [
-      { label: '[send reset link]', action: formSubmit },
-      { label: '[back to sign in]', action: openSignin },
+      { label: 'Send reset link', action: formSubmit },
+      { label: 'Back to sign in', action: openSignin },
     ],
     submit: async v => {
       const email = v.email.trim();
@@ -1335,6 +1346,673 @@ async function resendVerify() {
 }
 
 $('verify-link').addEventListener('click', e => { e.stopPropagation(); resendVerify(); });
+
+// ---------- profile ----------
+const PATTERNS = { dither: '░▒▓█▓▒░ ', grid: '+---', waves: '~^~_', stars: '. * ˙ ' };
+const RULE = '─'.repeat(200);
+const HEX = /^#[0-9a-f]{6}$/i;
+const PNG = /^data:image\/(png|jpeg);base64,[A-Za-z0-9+/=]+$/;
+const isSmooth = url => url.startsWith('data:image/jpeg');
+
+function frameEl(box, title) {
+  const top = el('div', 'ft');
+  const left = el('span', '', '┌─ ');
+  left.appendChild(el('span', 'tt2', title));
+  left.appendChild(document.createTextNode(' '));
+  top.append(left, el('span', 'fl', RULE), el('span', '', '┐'));
+  const bottom = el('div', 'ft fb');
+  bottom.append(el('span', '', '└'), el('span', 'fl', RULE), el('span', '', '┘'));
+  box.classList.add('fr');
+  box.prepend(top);
+  box.append(bottom);
+}
+
+function withDefaults(p) {
+  const display = p.display || p.username || '?';
+  const pfpImg = PNG.test(p.pfpImg || '') ? p.pfpImg : '';
+  const bannerImg = PNG.test(p.bannerImg || '') ? p.bannerImg : '';
+  let bannerMode = ['dither', 'grid', 'waves', 'stars', 'image'].includes(p.bannerMode) ? p.bannerMode : 'dither';
+  if (bannerMode === 'image' && !bannerImg) bannerMode = 'dither';
+  return {
+    username: p.username || '',
+    display,
+    created: p.created || 0,
+    badges: p.badges || '',
+    layout: [1, 2, 3].includes(p.layout) ? p.layout : 1,
+    accent: HEX.test(p.accent || '') ? p.accent : '#4ade80',
+    bio: p.bio || '',
+    letter: p.letter || Array.from(display)[0].toUpperCase(),
+    pfpMode: p.pfpMode === 'image' && pfpImg ? 'image' : 'letter',
+    pfpImg, bannerMode, bannerImg,
+  };
+}
+
+function pfpNode(p, size) {
+  const px = size + 'px';
+  if (p.pfpMode === 'image') {
+    const img = el('img', 'pfpb');
+    img.src = p.pfpImg;
+    img.alt = '';
+    img.style.imageRendering = isSmooth(p.pfpImg) ? 'auto' : 'pixelated';
+    img.style.width = px;
+    img.style.height = px;
+    return img;
+  }
+  const d = el('div', 'pfpb', p.letter);
+  d.style.width = px;
+  d.style.height = px;
+  d.style.background = p.accent;
+  d.style.fontSize = Math.round(size / 2) + 'px';
+  return d;
+}
+
+function bannerNode(p, rows, height) {
+  if (p.bannerMode === 'image') {
+    const img = el('img', 'pbanner');
+    img.src = p.bannerImg;
+    img.alt = '';
+    img.style.imageRendering = isSmooth(p.bannerImg) ? 'auto' : 'pixelated';
+    img.style.height = height + 'px';
+    return img;
+  }
+  const pat = PATTERNS[p.bannerMode] || PATTERNS.dither;
+  let line = '';
+  while (line.length < 140) line += pat;
+  const lines = [];
+  for (let i = 0; i < rows; i++) lines.push(i % 2 ? line.slice(2) : line);
+  const d = el('div', 'pbn', lines.join('\n'));
+  d.style.color = p.accent;
+  d.style.height = (rows * 12) + 'px';
+  return d;
+}
+
+function infoNode(p) {
+  const d = el('div', 'pinfo');
+  const row = (label, value) => {
+    const line = el('div');
+    line.append(el('span', 'c', label + ' '), document.createTextNode(value));
+    d.appendChild(line);
+  };
+  row('Login:', p.username);
+  row('Name:', p.display);
+  row('Joined:', p.created ? new Date(p.created).toISOString().slice(0, 10) : '—');
+  const tags = String(p.badges).split(',').map(t => t.trim()).filter(Boolean);
+  if (tags.length) d.appendChild(el('div', 'y', tags.map(t => '[' + t + ']').join(' ')));
+  return d;
+}
+
+function bioNode(p) {
+  const d = el('div', 'pbio');
+  d.appendChild(el('span', 'dim', 'bio'));
+  d.appendChild(document.createTextNode('\n'));
+  d.appendChild(p.bio ? document.createTextNode(p.bio) : el('span', 'dim italic', 'no bio yet.'));
+  return d;
+}
+
+function profileNode(raw) {
+  const p = withDefaults(raw);
+  const box = el('div', 'pbox');
+  if (p.layout === 1) {
+    box.appendChild(bannerNode(p, 4, 56));
+    const row = el('div', 'prow1');
+    row.append(pfpNode(p, 64), el('b', '', p.display));
+    box.append(row, infoNode(p));
+  } else if (p.layout === 2) {
+    const row = el('div', 'prow2');
+    const side = el('div', 'pside');
+    side.appendChild(bannerNode(p, 5, 64));
+    row.append(pfpNode(p, 64), side);
+    box.append(row, infoNode(p));
+  } else {
+    const row = el('div', 'prow3');
+    row.append(pfpNode(p, 64), infoNode(p));
+    const strip = el('div', 'pdiv');
+    strip.appendChild(bannerNode(p, 1, 20));
+    box.append(row, strip);
+  }
+  box.appendChild(bioNode(p));
+  frameEl(box, 'finger ' + p.username);
+  return box;
+}
+
+function renderProfile() {
+  const body = $('pf-body');
+  body.innerHTML = '';
+  if (!account) return;
+  body.appendChild(profileNode(account.profile));
+  $('pf-scroll').scrollTop = 0;
+}
+
+screens.profile = {
+  key: e => {
+    const box = $('pf-scroll');
+    const key = e.key.toLowerCase();
+    if (key === 'enter' || key === 'e') openEditProfile();
+    else if (key === 'arrowdown' || key === 's') box.scrollBy({ top: 60 });
+    else if (key === 'arrowup' || key === 'w') box.scrollBy({ top: -60 });
+    else if (key === 'escape') show('menu');
+  },
+};
+
+// ---------- edit profile ----------
+const ep = { s: null, rows: [], r: 0, c: 0, busy: false, armed: false, sel: [], art: [], idx: {}, resetBtn: null };
+
+function epMsg(text, kind) {
+  const m = $('ep-msg');
+  m.textContent = text;
+  m.className = 'setmsg small ' + (kind === 'err' ? 'fail' : kind === 'ok' ? 'ok' : 'dim');
+}
+
+function epCtl() {
+  const row = ep.rows[ep.r];
+  return row.items[Math.min(ep.c, row.items.length - 1)];
+}
+
+function epDisarm() {
+  if (!ep.armed) return;
+  ep.armed = false;
+  ep.resetBtn.textContent = 'Reset profile';
+}
+
+function epSet(r, c) {
+  if (r !== ep.r || c !== ep.c) epDisarm();
+  ep.r = r;
+  ep.c = c;
+  ep.rows.forEach((row, ri) => row.items.forEach((ctl, ci) => ctl.el.classList.toggle('on', ri === r && ci === c)));
+}
+
+function epFocus(r, c) {
+  epSet(r, c);
+  const ctl = ep.rows[r].items[c];
+  if (ctl.input) ctl.input.focus();
+  else if (document.activeElement && document.activeElement !== document.body) document.activeElement.blur();
+  ctl.el.scrollIntoView({ block: 'nearest' });
+}
+
+function epLinear(step) {
+  const flat = [];
+  ep.rows.forEach((row, r) => row.items.forEach((_, c) => flat.push([r, c])));
+  let i = flat.findIndex(p => p[0] === ep.r && p[1] === ep.c);
+  i = (i + step + flat.length) % flat.length;
+  epFocus(flat[i][0], flat[i][1]);
+}
+
+function epRow(step) {
+  const r = (ep.r + step + ep.rows.length) % ep.rows.length;
+  epFocus(r, Math.min(ep.c, ep.rows[r].items.length - 1));
+}
+
+function epCol(step) {
+  const n = ep.rows[ep.r].items.length;
+  const c = Math.max(0, Math.min(n - 1, ep.c + step));
+  if (c !== ep.c) epFocus(ep.r, c);
+}
+
+function epRefresh() {
+  ep.sel.forEach(s => s.el.classList.toggle('sel', s.test()));
+  ep.art.forEach(fn => fn());
+}
+
+function openEditProfile() {
+  const p = withDefaults(account.profile);
+  ep.s = {
+    layout: p.layout, accent: p.accent, display: p.display, bio: p.bio, letter: p.letter,
+    pfpMode: p.pfpMode, pfpImg: p.pfpImg, bannerMode: p.bannerMode, bannerImg: p.bannerImg,
+  };
+  ep.rows = [];
+  ep.sel = [];
+  ep.art = [];
+  ep.idx = {};
+  ep.r = 0;
+  ep.c = 0;
+  ep.busy = false;
+  ep.armed = false;
+  const body = $('ep-body');
+  body.innerHTML = '';
+
+  const section = title => {
+    const sec = el('div', 'esec');
+    if (title) sec.appendChild(el('p', 'etitle', title));
+    body.appendChild(sec);
+    return sec;
+  };
+
+  const newRow = (parent, cls) => {
+    const holder = el('div', cls || 'etiles');
+    parent.appendChild(holder);
+    const row = { holder, items: [] };
+    ep.rows.push(row);
+    return row;
+  };
+
+  const add = (row, node, kind, act, input) => {
+    const ctl = { el: node, kind, act, input };
+    row.items.push(ctl);
+    const r = ep.rows.indexOf(row);
+    const c = row.items.length - 1;
+    if (input) input.addEventListener('focus', () => epSet(r, c));
+    else node.addEventListener('click', ev => { epFocus(r, c); if (act) act(ev); });
+    row.holder.appendChild(node);
+    return ctl;
+  };
+
+  const tile = (row, art, caption, act, isSel) => {
+    const b = el('button', 'tile');
+    b.tabIndex = -1;
+    b.append(art, el('span', 'tcap', caption));
+    b.addEventListener('click', () => b.blur());
+    if (isSel) ep.sel.push({ el: b, test: isSel });
+    return add(row, b, 'tile', act);
+  };
+
+  const field = (parent, label, key, max, opts = {}) => {
+    const row = newRow(parent, 'frow');
+    if (opts.id) ep.idx[opts.id] = ep.rows.length - 1;
+    const wrap = el('div', 'fwrap');
+    wrap.appendChild(el('label', 'flabel', label));
+    const input = el(opts.area ? 'textarea' : 'input', 'finput' + (opts.area ? ' area' : '') + (opts.cls ? ' ' + opts.cls : ''));
+    if (!opts.area) input.type = 'text';
+    input.maxLength = max;
+    input.autocomplete = 'off';
+    input.spellcheck = false;
+    input.value = ep.s[key];
+    input.addEventListener('input', () => {
+      if (opts.upper) input.value = input.value.toUpperCase();
+      ep.s[key] = input.value;
+      epRefresh();
+    });
+    wrap.appendChild(input);
+    add(row, wrap, opts.area ? 'area' : 'input', null, input);
+  };
+
+  const layoutSec = section('Layout');
+  const lrow = newRow(layoutSec);
+  [[1, 'Banner on top'], [2, 'Banner beside picture'], [3, 'Banner as divider']].forEach(([n, cap]) => {
+    const wf = el('div', 'wf l' + n);
+    ['b', 'p', 't1', 't2'].forEach(k => wf.appendChild(el('i', k)));
+    if (n === 3) wf.appendChild(el('i', 't3'));
+    tile(lrow, wf, cap, () => { ep.s.layout = n; epRefresh(); }, () => ep.s.layout === n);
+  });
+
+  const details = section('Details');
+  field(details, 'Display name', 'display', 20, { id: 'display' });
+  field(details, 'Bio', 'bio', 200, { area: true });
+  const colorRow = newRow(details, 'frow');
+  const sw = el('div', 'swatchrow');
+  sw.appendChild(el('span', 'flabel', 'Accent color'));
+  const cin = el('input', 'tcolor');
+  cin.type = 'color';
+  cin.value = ep.s.accent;
+  const hex = el('span', 'dim', ep.s.accent);
+  cin.addEventListener('input', () => { ep.s.accent = cin.value; hex.textContent = cin.value; epRefresh(); });
+  sw.append(cin, hex);
+  add(colorRow, sw, 'color', ev => { if (ev && ev.target === cin) return; cin.click(); });
+
+  const pic = section('Profile picture');
+  const prow = newRow(pic);
+  const letterArt = el('div', 'tart');
+  tile(prow, letterArt, 'Letter', () => { ep.s.pfpMode = 'letter'; epRefresh(); }, () => ep.s.pfpMode === 'letter');
+  ep.art.push(() => { letterArt.textContent = ep.s.letter || '?'; letterArt.style.background = ep.s.accent; });
+
+  const imgArt = el('div', 'tart');
+  const imgTile = tile(prow, imgArt, 'Image', () => {
+    if (ep.s.pfpImg && ep.s.pfpMode !== 'image') { ep.s.pfpMode = 'image'; epRefresh(); }
+    else epUpload('pfp');
+  }, () => ep.s.pfpMode === 'image');
+  const imgCap = imgTile.el.querySelector('.tcap');
+  ep.art.push(() => {
+    imgArt.replaceChildren();
+    if (ep.s.pfpImg) {
+      const im = el('img');
+      im.src = ep.s.pfpImg;
+      im.alt = '';
+      im.style.imageRendering = isSmooth(ep.s.pfpImg) ? 'auto' : 'pixelated';
+      imgArt.appendChild(im);
+    } else imgArt.appendChild(el('span', 'dim', '+'));
+    imgCap.textContent = !ep.s.pfpImg ? 'Image (upload)' : ep.s.pfpMode === 'image' ? 'Image (click to replace)' : 'Image (your last one)';
+  });
+
+  tile(prow, el('div', 'tart glyph', '✎'), 'Drawing', () => epMsg('the drawing pad comes later.', 'dim'));
+  field(pic, 'Picture letter', 'letter', 1, { cls: 'short', upper: true, id: 'letter' });
+
+  const ban = section('Banner');
+  const crow = newRow(ban, 'chips');
+  ['dither', 'grid', 'waves', 'stars'].forEach(name => {
+    const b = el('button', 'chip', name);
+    b.tabIndex = -1;
+    add(crow, b, 'chip', () => { ep.s.bannerMode = name; epRefresh(); });
+    ep.sel.push({ el: b, test: () => ep.s.bannerMode === name });
+  });
+
+  const brow = newRow(ban);
+  const bannerArt = el('div', 'tart wide');
+  const bannerTile = tile(brow, bannerArt, 'Image', () => {
+    if (ep.s.bannerImg && ep.s.bannerMode !== 'image') { ep.s.bannerMode = 'image'; epRefresh(); }
+    else epUpload('banner');
+  }, () => ep.s.bannerMode === 'image');
+  const bannerCap = bannerTile.el.querySelector('.tcap');
+  ep.art.push(() => {
+    bannerArt.replaceChildren();
+    if (ep.s.bannerImg) {
+      const im = el('img');
+      im.src = ep.s.bannerImg;
+      im.alt = '';
+      im.style.imageRendering = isSmooth(ep.s.bannerImg) ? 'auto' : 'pixelated';
+      bannerArt.appendChild(im);
+    } else bannerArt.appendChild(el('span', 'dim', '+'));
+    bannerCap.textContent = !ep.s.bannerImg ? 'Image (upload)' : ep.s.bannerMode === 'image' ? 'Image (click to replace)' : 'Image (your last one)';
+  });
+  tile(brow, el('div', 'tart wide glyph', '✎'), 'Drawing', () => epMsg('the drawing pad comes later.', 'dim'));
+
+  const actions = section('');
+  const btnRow = (label, cls, fn) => {
+    const row = newRow(actions, 'ebtn');
+    const b = el('button', 'fbtn ' + cls, label);
+    b.tabIndex = -1;
+    b.addEventListener('click', () => b.blur());
+    add(row, b, 'btn', fn);
+    return b;
+  };
+  btnRow('Save', 'primary', epSave);
+  btnRow('Cancel', 'link', () => show('profile'));
+  ep.resetBtn = btnRow('Reset profile', 'danger', epReset);
+
+  epRefresh();
+  epMsg('', 'dim');
+  show('editprofile');
+  $('ep-scroll').scrollTop = 0;
+  epFocus(0, 0);
+}
+
+async function refreshAccountProfile() {
+  const fresh = await fbLoadProfile(account.uid);
+  if (fresh) {
+    account.profile = fresh;
+    account.display = fresh.display;
+    me.name = fresh.display;
+  }
+}
+
+async function epSave() {
+  if (ep.busy) return;
+  const s = ep.s;
+  const display = s.display.trim();
+  const letter = Array.from(s.letter.trim())[0] || '';
+  if (!display) { epMsg("display name can't be empty.", 'err'); return epFocus(ep.idx.display, 0); }
+  if (!letter) { epMsg('pick one character for the picture letter.', 'err'); return epFocus(ep.idx.letter, 0); }
+
+  ep.busy = true;
+  epMsg('saving...', 'dim');
+  const res = await fbSaveProfile(account.uid, {
+    layout: s.layout,
+    accent: s.accent,
+    display,
+    bio: s.bio.trim() || null,
+    letter,
+    pfpMode: s.pfpMode,
+    pfpImg: s.pfpImg || null,
+    bannerMode: s.bannerMode,
+    bannerImg: s.bannerImg || null,
+  });
+  ep.busy = false;
+  if (res.error) return epMsg(res.error, 'err');
+  await refreshAccountProfile();
+  show('profile');
+}
+
+async function epReset() {
+  if (ep.busy) return;
+  if (!ep.armed) {
+    ep.armed = true;
+    ep.resetBtn.textContent = 'Click again to confirm';
+    return epMsg('this resets your name, bio, pictures and layout.', 'err');
+  }
+  ep.armed = false;
+  ep.busy = true;
+  epMsg('resetting...', 'dim');
+  const res = await fbSaveProfile(account.uid, {
+    layout: null, accent: null, display: account.username, bio: null, letter: null,
+    pfpMode: null, pfpImg: null, bannerMode: null, bannerImg: null,
+  });
+  ep.busy = false;
+  if (res.error) return epMsg(res.error, 'err');
+  await refreshAccountProfile();
+  show('profile');
+}
+
+screens.editprofile = {
+  key: e => {
+    const ctl = epCtl();
+    const typing = !!ctl.input && document.activeElement === ctl.input;
+    const key = e.key.toLowerCase();
+
+    if (key === 'tab') { e.preventDefault(); return epLinear(e.shiftKey ? -1 : 1); }
+
+    if (typing) {
+      if (key === 'escape') { e.preventDefault(); ctl.input.blur(); return; }
+      if (ctl.kind === 'input') {
+        if (key === 'arrowdown') { e.preventDefault(); epRow(1); }
+        else if (key === 'arrowup') { e.preventDefault(); epRow(-1); }
+        else if (key === 'enter') { e.preventDefault(); epLinear(1); }
+      }
+      return;
+    }
+
+    if (key === 'arrowdown' || key === 's') { e.preventDefault(); epRow(1); }
+    else if (key === 'arrowup' || key === 'w') { e.preventDefault(); epRow(-1); }
+    else if (key === 'arrowleft' || key === 'a') { e.preventDefault(); epCol(-1); }
+    else if (key === 'arrowright' || key === 'd') { e.preventDefault(); epCol(1); }
+    else if (key === 'enter') {
+      e.preventDefault();
+      if (ctl.act) ctl.act();
+      else if (ctl.input) ctl.input.focus();
+    }
+    else if (key === 'escape') show('profile');
+  },
+  wheel: dir => epRow(dir),
+};
+
+// ---------- image picking and cropping ----------
+function pickFile() {
+  return new Promise(resolve => {
+    const input = document.createElement('input');
+    input.type = 'file';
+    input.accept = 'image/*';
+    input.addEventListener('change', () => resolve(input.files[0] || null));
+    input.addEventListener('cancel', () => resolve(null));
+    input.click();
+  });
+}
+
+function loadImage(file) {
+  return new Promise((resolve, reject) => {
+    const url = URL.createObjectURL(file);
+    const img = new Image();
+    img.onload = () => { URL.revokeObjectURL(url); resolve(img); };
+    img.onerror = () => { URL.revokeObjectURL(url); reject(new Error('bad image')); };
+    img.src = url;
+  });
+}
+
+async function epUpload(kind) {
+  const file = await pickFile();
+  if (!file) return;
+  epMsg('opening image...', 'dim');
+  let img;
+  try { img = await loadImage(file); }
+  catch (e) { console.error(e); return epMsg('could not read that image.', 'err'); }
+
+  openCrop(kind, img,
+    url => {
+      if (kind === 'pfp') { ep.s.pfpImg = url; ep.s.pfpMode = 'image'; }
+      else { ep.s.bannerImg = url; ep.s.bannerMode = 'image'; }
+      epRefresh();
+      show('editprofile');
+      epMsg((kind === 'pfp' ? 'picture' : 'banner') + ' ready. press Save to keep it.', 'ok');
+    },
+    () => { show('editprofile'); epMsg('', 'dim'); });
+}
+
+const CROP = {
+  pfp: { view: [240, 240], title: 'Crop picture', res: [[16, 16], [32, 32], [64, 64]], smooth: [128, 128], cap: 30000, out: [96, 96] },
+  banner: { view: [480, 120], title: 'Crop banner', res: [[48, 12], [96, 24], [192, 48]], smooth: [384, 96], cap: 60000, out: [192, 48] },
+};
+const cr = { kind: null, img: null, zoom: 1, ox: 0, oy: 0, res: 1, done: null, cancel: null, drag: null };
+const crView = $('cr-view');
+
+function cropGeom() {
+  const [vw, vh] = CROP[cr.kind].view;
+  const iw = cr.img.naturalWidth, ih = cr.img.naturalHeight;
+  const scale = Math.max(vw / iw, vh / ih) * cr.zoom;
+  const dw = iw * scale, dh = ih * scale;
+  const mx = Math.max(0, (dw - vw) / 2), my = Math.max(0, (dh - vh) / 2);
+  cr.ox = Math.max(-mx, Math.min(mx, cr.ox));
+  cr.oy = Math.max(-my, Math.min(my, cr.oy));
+  return { vw, vh, scale, dw, dh, left: vw / 2 + cr.ox - dw / 2, top: vh / 2 + cr.oy - dh / 2 };
+}
+
+function cropSize() {
+  const cfg = CROP[cr.kind];
+  return cr.res < 3 ? cfg.res[cr.res] : cfg.smooth;
+}
+
+function cropRender(g, w, h) {
+  const c = document.createElement('canvas');
+  c.width = w;
+  c.height = h;
+  const x = c.getContext('2d');
+  x.fillStyle = '#0c0c0c';
+  x.fillRect(0, 0, w, h);
+  x.imageSmoothingEnabled = true;
+  x.imageSmoothingQuality = 'high';
+  x.drawImage(cr.img, -g.left / g.scale, -g.top / g.scale, g.vw / g.scale, g.vh / g.scale, 0, 0, w, h);
+  return c;
+}
+
+function cropDraw() {
+  const g = cropGeom();
+  const x = crView.getContext('2d');
+  x.fillStyle = '#0c0c0c';
+  x.fillRect(0, 0, g.vw, g.vh);
+  x.imageSmoothingQuality = 'high';
+  x.drawImage(cr.img, g.left, g.top, g.dw, g.dh);
+
+  const [w, h] = cropSize();
+  const out = $('cr-out');
+  out.width = w;
+  out.height = h;
+  out.getContext('2d').drawImage(cropRender(g, w, h), 0, 0);
+  out.style.imageRendering = cr.res < 3 ? 'pixelated' : 'auto';
+  out.style.width = CROP[cr.kind].out[0] + 'px';
+  out.style.height = CROP[cr.kind].out[1] + 'px';
+
+  const zoom = $('cr-zoom');
+  if (Number(zoom.value) !== Math.round(cr.zoom * 100)) zoom.value = Math.round(cr.zoom * 100);
+}
+
+function cropChips() {
+  const cfg = CROP[cr.kind];
+  const box = $('cr-chips');
+  box.innerHTML = '';
+  const labels = cfg.res.map(([w, h], i) => (i + 1) + ' · ' + w + '×' + h).concat(['4 · Smooth (no pixelation)']);
+  labels.forEach((text, i) => {
+    const b = el('button', 'chip' + (i === cr.res ? ' sel' : ''), text);
+    b.tabIndex = -1;
+    b.addEventListener('click', () => { b.blur(); setCropRes(i); });
+    box.appendChild(b);
+  });
+  $('cr-note').textContent = 'Smooth keeps the full look but shrinks it to ' + cfg.smooth[0] + '×' + cfg.smooth[1] + ' so profiles load fast.';
+}
+
+function setCropRes(i) {
+  cr.res = i;
+  cropChips();
+  cropDraw();
+}
+
+function openCrop(kind, img, done, cancel) {
+  cr.kind = kind;
+  cr.img = img;
+  cr.zoom = 1;
+  cr.ox = 0;
+  cr.oy = 0;
+  cr.res = 1;
+  cr.done = done;
+  cr.cancel = cancel;
+  cr.drag = null;
+  const cfg = CROP[kind];
+  $('cr-title').textContent = cfg.title;
+  crView.width = cfg.view[0];
+  crView.height = cfg.view[1];
+  $('cr-msg').textContent = '';
+  $('cr-msg').className = 'setmsg small dim';
+  cropChips();
+  show('crop');
+  cropDraw();
+}
+
+function cropConfirm() {
+  const g = cropGeom();
+  const [w, h] = cropSize();
+  const cap = CROP[cr.kind].cap;
+  const c = cropRender(g, w, h);
+  let url = null;
+  if (cr.res < 3) {
+    const png = c.toDataURL('image/png');
+    if (png.length < cap) url = png;
+  } else {
+    for (const q of [0.88, 0.75, 0.6, 0.45]) {
+      const jpg = c.toDataURL('image/jpeg', q);
+      if (jpg.length < cap) { url = jpg; break; }
+    }
+  }
+  if (!url) {
+    $('cr-msg').textContent = 'that is too detailed to save. try a lower pixelation option.';
+    $('cr-msg').className = 'setmsg small fail';
+    return;
+  }
+  cr.done(url);
+}
+
+function cropZoom(delta) {
+  cr.zoom = Math.max(1, Math.min(4, cr.zoom + delta));
+  cropDraw();
+}
+
+crView.addEventListener('pointerdown', e => {
+  cr.drag = { x: e.clientX, y: e.clientY, ox: cr.ox, oy: cr.oy };
+  crView.setPointerCapture(e.pointerId);
+  crView.style.cursor = 'grabbing';
+});
+crView.addEventListener('pointermove', e => {
+  if (!cr.drag) return;
+  cr.ox = cr.drag.ox + e.clientX - cr.drag.x;
+  cr.oy = cr.drag.oy + e.clientY - cr.drag.y;
+  cropDraw();
+});
+crView.addEventListener('pointerup', () => { cr.drag = null; crView.style.cursor = 'grab'; });
+
+$('cr-zoom').addEventListener('input', e => { cr.zoom = e.target.value / 100; cropDraw(); });
+$('cr-zoom').addEventListener('change', e => e.target.blur());
+$('cr-ok').addEventListener('click', e => { e.target.blur(); cropConfirm(); });
+$('cr-no').addEventListener('click', e => { e.target.blur(); cr.cancel(); });
+
+screens.crop = {
+  key: e => {
+    const step = e.shiftKey ? 40 : 10;
+    const key = e.key;
+    if (key === 'Enter') { e.preventDefault(); cropConfirm(); }
+    else if (key === 'Escape') cr.cancel();
+    else if (key === 'ArrowLeft') { e.preventDefault(); cr.ox -= step; cropDraw(); }
+    else if (key === 'ArrowRight') { e.preventDefault(); cr.ox += step; cropDraw(); }
+    else if (key === 'ArrowUp') { e.preventDefault(); cr.oy -= step; cropDraw(); }
+    else if (key === 'ArrowDown') { e.preventDefault(); cr.oy += step; cropDraw(); }
+    else if (key === '+' || key === '=') cropZoom(0.15);
+    else if (key === '-' || key === '_') cropZoom(-0.15);
+    else if (key >= '1' && key <= '4') setCropRes(Number(key) - 1);
+  },
+  wheel: dir => cropZoom(-dir * 0.15),
+};
 
 // ---------- tutorial ----------
 const tut = { active: false, step: 0, steps: [], last: 0, shown: false, filled: false, timers: [] };

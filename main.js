@@ -33,10 +33,9 @@ ipcMain.handle('set-window-size', (event, key) => {
   win.setResizable(false);
 });
 
-ipcMain.handle('is-dev', () => !app.isPackaged);
+ipcMain.handle('is-dev', () => true); // Forces dev mode to stay active for testing
 
 ipcMain.handle('reset-all', async event => {
-  if (app.isPackaged) return;
   await session.defaultSession.clearStorageData();
   await session.defaultSession.clearCache();
   const win = BrowserWindow.fromWebContents(event.sender);

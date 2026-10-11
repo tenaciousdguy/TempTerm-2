@@ -2,13 +2,13 @@
 <html>
 <head>
   <meta charset="utf-8">
-  <title>TempTerm</title>
+  <title>TempTerm 2.0 Pre-Release 1</title>
   <link rel="stylesheet" href="style.css">
 </head>
 <body>
   <section id="splash" class="screen center">
     <h1 id="splash-title">TempTerm</h1>
-    <p id="splash-ver" class="dim italic">v2.0</p>
+    <p id="splash-ver" class="dim italic">v2.0 pre-release 1</p>
     <pre id="boot"></pre>
     <p id="tap" class="dim">tap to continue</p>
   </section>
@@ -97,6 +97,47 @@
     <div id="f-scroll" class="scrollbody"><div id="f-body"></div></div>
     <p id="f-msg" class="setmsg small"></p>
     <p class="hint dim small">↑ ↓ / Tab = move | Enter = next or choose | Escape = Back</p>
+  </section>
+
+    <section id="profile" class="screen page" hidden>
+    <p class="ptitle">Profile</p>
+    <div id="pf-scroll" class="scrollbody">
+      <div id="pf-body"></div>
+      <p class="pedit">&gt; [edit profile]</p>
+    </div>
+    <p class="hint dim small">Enter or E = Edit profile | ↑ ↓ / W S = scroll | Escape = Back</p>
+  </section>
+
+  <section id="editprofile" class="screen page" hidden>
+    <p class="ptitle">Edit Profile</p>
+    <div id="ep-scroll" class="scrollbody"><div id="ep-body"></div></div>
+    <p id="ep-msg" class="setmsg small"></p>
+    <p class="hint dim small">click anything, or ↑ ↓ ← → / Tab = move | Enter = choose | Escape = Cancel</p>
+  </section>
+
+    <section id="crop" class="screen page" hidden>
+    <p id="cr-title" class="ptitle">Crop picture</p>
+    <div id="cr-scroll" class="scrollbody">
+      <div class="cropwrap">
+        <div class="crleft">
+          <canvas id="cr-view" class="crview"></canvas>
+          <div class="crzoom"><span class="dim small">Zoom</span><input id="cr-zoom" type="range" min="100" max="400" step="5" value="100" tabindex="-1"></div>
+        </div>
+        <div class="crright">
+          <p class="etitle">Pixelation</p>
+          <div id="cr-chips" class="chips"></div>
+          <p id="cr-note" class="dim small"></p>
+          <p class="etitle" style="margin-top:14px">Result</p>
+          <canvas id="cr-out" class="crout"></canvas>
+          <div class="crbtns">
+            <button id="cr-ok" class="fbtn primary" tabindex="-1">Use this</button>
+            <button id="cr-no" class="fbtn link" tabindex="-1">Cancel</button>
+          </div>
+        </div>
+      </div>
+    </div>
+    <p id="cr-msg" class="setmsg small"></p>
+    <p class="hint dim small">drag = move | scroll or + − = zoom | arrows = nudge | 1-4 = pixelation | Enter = use | Escape = cancel</p>
   </section>
 
   <script type="module" src="renderer.js"></script>

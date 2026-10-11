@@ -5,7 +5,7 @@ import {
   deleteUser,
 } from 'https://www.gstatic.com/firebasejs/12.14.0/firebase-auth.js';
 import {
-  getDatabase, ref, onValue, get, set, push, remove,
+  getDatabase, ref, onValue, get, set, push, remove, update,
   onChildAdded, onDisconnect, serverTimestamp,
 } from 'https://www.gstatic.com/firebasejs/12.14.0/firebase-database.js';
 
@@ -56,8 +56,22 @@ export async function fbInit() {
 }
 
 export async function fbLoadProfile(uid) {
-  const snap = await get(ref(db, `users/${uid}`));
-  return snap.exists() ? snap.val() : null;
+  const [user, badges] = await Promise.all([
+    get(ref(db, `users/${uid}`)),
+    get(ref(db, `badges/${uid}`)),
+  ]);
+  if (!user.exists()) return null;
+  return { ...user.val(), badges: badges.exists() ? badges.val() : '' };
+}
+
+export async function fbSaveProfile(uid, fields) {
+  try {
+    await update(ref(db, `users/${uid}`), fields);
+    return {};
+  } catch (err) {
+    console.error(err);
+    return { error: 'could not save. check your connection.' };
+  }
 }
 
 export async function fbUsernameFree(name) {
