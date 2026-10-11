@@ -1,10 +1,12 @@
 import {
-  watchConnection, fbInit, fbLoadProfile, fbSaveProfile, fbUsernameFree, fbSignUp, fbSignIn, fbSignOut, fbSendReset,
+  watchConnection, fbInit, fbLoadProfile, fbSaveProfile, fbUsernameFree, fbSignUp, fbSignIn, fbSignOut, fbSendReset, fbGetUser,
   fbEmailVerified, fbResendVerification,
   fbCreateRoom, fbJoinRoom, fbLeaveRoom, fbCleanup,
   fbSendMessage, fbWatchRoom, fbListRooms,
 } from './firebase.js';
-import { settings, save, THEMES, SIZES, applyTheme, applyColors, applyUi, applySize, getTheme, newThemeId } from './settings.js';
+import { settings, save, THEMES, SIZES, applyTheme, applyColors, applyUi, applyPfps, applySize, getTheme, newThemeId } from './settings.js';
+
+const $ = id => document.getElementById(id);
 
 // ---------- state ----------
 function randomGuestName() {
@@ -530,12 +532,15 @@ function lineEl(text, cls) {
   return p;
 }
 
-function msgEl(name, text) {
+function msgEl(name, text, uid) {
   const p = document.createElement('p');
-  const who = document.createElement('span');
-  who.className = 'who';
-  who.textContent = name;
+  const who = el('span', 'who');
+  who.dataset.uid = uid || '';
+  who.dataset.name = name;
+  const pf = el('span', 'pfsq cpf');
+  who.append(pf, el('span', 'wname', name));
   p.append(who, ': ' + text);
+  getUser(uid).then(u => fillPfp(pf, u));
   return p;
 }
 
@@ -564,16 +569,20 @@ function enterChat() {
   document.getElementById('log').innerHTML = '';
   document.getElementById('msg').value = '';
   document.getElementById('count').textContent = '';
+  userCache.clear();
+  resetChatUi();
+  room.members = {};
 
   stopWatch = fbWatchRoom(room.code, {
     onMessage: (key, m) => {
-      const node = m.type === 'system' ? lineEl('[system]: ' + m.text, 'dim') : msgEl(m.name, m.text);
+      const node = m.type === 'system' ? lineEl('[system]: ' + m.text, 'dim') : msgEl(m.name, m.text, m.uid);
       insertLine(node, key, m.ts);
     },
     onMembers: members => {
+      room.members = members;
       const n = Object.keys(members).length;
       document.getElementById('count').textContent =
-        n + ' chatter' + (n === 1 ? '' : 's') + ' in room (limit ' + room.limit + ')';
+        n + ' chatter' + (n === 1 ? '' : 's') + ' in room (limit ' + room.limit + ')  ·  Tab = see who is here';
     },
   });
 
@@ -598,8 +607,210 @@ document.getElementById('log').addEventListener('mouseup', () => {
 });
 
 screens.chat = {
-  key: e => { if (e.key === 'Escape') leaveCurrentRoom(); },
+  key: e => {
+    if (chatUi.pv) return pvKey(e);
+    if (chatUi.who) return whoKey(e);
+    if (e.key === 'Escape') {
+      if (chatUi.card) return closeCard();
+      return leaveCurrentRoom();
+    }
+    if (e.key === 'Tab') { e.preventDefault(); openWho(); }
+  },
+  wheel: dir => { if (chatUi.who) moveWho(dir); },
 };
+
+// ---------- people in chat ----------
+const userCache = new Map();
+const chatUi = { card: false, who: false, pv: false, whoSel: 0, whoList: [] };
+
+function getUser(uid) {
+  if (!uid) return Promise.resolve(null);
+  if (account && uid === account.uid) return Promise.resolve(account.profile);
+  if (!userCache.has(uid)) userCache.set(uid, fbGetUser(uid).catch(() => null));
+  return userCache.get(uid);
+}
+
+function fillPfp(node, user, size) {
+  node.replaceChildren();
+  if (size) {
+    node.style.width = size + 'px';
+    node.style.height = size + 'px';
+    node.style.fontSize = Math.round(size / 2) + 'px';
+  }
+  if (!user) { node.style.background = '#9a9a9a'; node.textContent = '?'; return; }
+  const p = withDefaults(user);
+  if (p.pfpMode === 'image') {
+    const img = el('img');
+    img.src = p.pfpImg;
+    img.alt = '';
+    img.style.imageRendering = isSmooth(p.pfpImg) ? 'auto' : 'pixelated';
+    node.style.background = 'transparent';
+    node.appendChild(img);
+  } else {
+    node.style.background = p.accent;
+    node.textContent = p.letter;
+  }
+}
+
+function guestNode(name) {
+  const box = el('div', 'pbox');
+  const row = el('div', 'prow3');
+  const pf = el('div', 'pfb', '?');
+  pf.style.cssText = 'width:64px;height:64px;background:#9a9a9a;font-size:32px';
+  const info = el('div', 'pinfo');
+  [['Username:', 'guest (no account)'], ['Name:', name || 'guest'], ['Joined:', 'just now']].forEach(([a, b]) => {
+    const line = el('div');
+    line.append(el('span', 'c', a + ' '), document.createTextNode(b));
+    info.appendChild(line);
+  });
+  info.appendChild(el('div', 'dim', '[guest]'));
+  row.append(pf, info);
+  const bio = el('div', 'pbio');
+  bio.append(el('span', 'dim', 'bio'),
+    document.createTextNode('\nthis user is a guest!\nwhich means they are a stupid butthead'));
+  box.append(row, bio);
+  frameEl(box, 'guest\'s profile');
+  return box;
+}
+
+function closeCard() {
+  chatUi.card = false;
+  $('card').hidden = true;
+}
+
+function resetChatUi() {
+  chatUi.card = chatUi.who = chatUi.pv = false;
+  $('card').hidden = true;
+  $('wl').hidden = true;
+  $('pv').hidden = true;
+}
+
+async function openCard(anchor) {
+  const uid = anchor.dataset.uid;
+  const name = anchor.dataset.name;
+  const user = await getUser(uid);
+  const card = $('card');
+  card.innerHTML = '';
+
+  const top = el('div', 'pcrow');
+  const pf = el('span', 'pfsq mpf');
+  fillPfp(pf, user, 40);
+  const text = el('div');
+  text.appendChild(el('b', '', user ? (user.display || name) : name));
+  text.appendChild(el('div', 'dim small', user ? '@' + user.username : 'guest'));
+  top.append(pf, text);
+
+  const btn = el('button', 'fbtn', 'View profile');
+  btn.tabIndex = -1;
+  btn.addEventListener('click', () => { btn.blur(); openProfileOverlay(uid, name); });
+  card.append(top, btn);
+  frameEl(card, 'card');
+  card.hidden = false;
+  chatUi.card = true;
+
+  const base = $('chat').getBoundingClientRect();
+  const r = anchor.getBoundingClientRect();
+  const left = Math.max(8, Math.min(r.left - base.left, base.width - card.offsetWidth - 12));
+  let topPos = r.top - base.top - card.offsetHeight - 6;
+  if (topPos < 8) topPos = r.bottom - base.top + 6;
+  card.style.left = left + 'px';
+  card.style.top = topPos + 'px';
+}
+
+async function openProfileOverlay(uid, name) {
+  closeCard();
+  const holder = $('pv-card');
+  holder.innerHTML = '';
+  let node;
+  if (uid && account && uid === account.uid) node = profileNode(account.profile);
+  else {
+    const u = uid ? await fbLoadProfile(uid).catch(() => null) : null;
+    node = u ? profileNode(u) : guestNode(name);
+  }
+  holder.appendChild(node);
+  $('pv').hidden = false;
+  $('pv').scrollTop = 0;
+  chatUi.pv = true;
+  $('msg').blur();
+}
+
+function closePv() {
+  chatUi.pv = false;
+  $('pv').hidden = true;
+  $('msg').focus();
+}
+
+function pvKey(e) {
+  const key = e.key.toLowerCase();
+  e.preventDefault();
+  if (key === 'escape' || key === 'enter') closePv();
+  else if (key === 'arrowdown' || key === 's') $('pv').scrollBy({ top: 60 });
+  else if (key === 'arrowup' || key === 'w') $('pv').scrollBy({ top: -60 });
+}
+
+function renderWho() {
+  const box = $('wl');
+  box.innerHTML = '';
+  chatUi.whoList.forEach((m, i) => {
+    const on = i === chatUi.whoSel;
+    const row = el('div', 'wrow' + (on ? ' sel' : ''));
+    const pf = el('span', 'pfsq mpf');
+    row.append(el('span', 'wmark', on ? '>' : ''), pf, el('span', '', m.name + (m.uid === me.uid ? ' (you)' : '')));
+    getUser(m.uid).then(u => fillPfp(pf, u));
+    box.appendChild(row);
+  });
+  box.appendChild(el('div', 'dim small', '↑ ↓ = choose | Enter = view profile | Esc = close'));
+  frameEl(box, 'in this room');
+  box.hidden = false;
+}
+
+function openWho() {
+  const members = room && room.members ? Object.entries(room.members) : [];
+  if (!members.length) return;
+  chatUi.whoList = members
+    .map(([uid, m]) => ({ uid, name: m.name || 'guest' }))
+    .sort((a, b) => a.name.localeCompare(b.name));
+  chatUi.whoSel = Math.max(0, chatUi.whoList.findIndex(m => m.uid === me.uid));
+  closeCard();
+  chatUi.who = true;
+  $('msg').blur();
+  renderWho();
+}
+
+function closeWho() {
+  chatUi.who = false;
+  $('wl').hidden = true;
+  $('msg').focus();
+}
+
+function moveWho(step) {
+  chatUi.whoSel = (chatUi.whoSel + step + chatUi.whoList.length) % chatUi.whoList.length;
+  renderWho();
+}
+
+function whoKey(e) {
+  const key = e.key.toLowerCase();
+  e.preventDefault();
+  if (key === 'escape' || key === 'tab') closeWho();
+  else if (key === 'arrowdown' || key === 's') moveWho(1);
+  else if (key === 'arrowup' || key === 'w') moveWho(-1);
+  else if (key === 'enter') {
+    const m = chatUi.whoList[chatUi.whoSel];
+    closeWho();
+    openProfileOverlay(m.uid, m.name);
+  }
+}
+
+$('log').addEventListener('click', e => {
+  const who = e.target.closest('.who');
+  if (!who) return;
+  e.stopPropagation();
+  openCard(who);
+});
+
+$('chat').addEventListener('click', e => {
+  if (chatUi.card && !e.target.closest('#card')) closeCard();
+});
 
 // ---------- changelog ----------
 const changelog = {
@@ -607,7 +818,7 @@ const changelog = {
     'Rebuilt from scratch',
     'New boot screen',
     'Guest mode: a fresh guest name every time you load the menu',
-    'Accounts / Profiles',
+    'Accounts / Profiles (hopefully fully working)',
     'Tutorial when you first open the app',
     'Settings re-built',
   ],
@@ -733,7 +944,6 @@ screens.credits = {
 };
 
 // ---------- settings ----------
-const $ = id => document.getElementById(id);
 const set = { selectable: [], cur: 0, customOpen: false, flash: '', confirmDelete: null, pendingFocus: null };
 const SELECTABLE = ['radio', 'toggle', 'cycle', 'link', 'dropout'];
 
@@ -764,11 +974,11 @@ function settingsRows() {
   rows.push({ type: 'label', text: 'Size (applies instantly)' });
   SIZES.forEach(size => rows.push({ type: 'radio', key: 'size', value: size, text: size }));
   rows.push({ type: 'head', text: 'toggles' });
-  rows.push({ type: 'toggle', key: 'pfps', text: 'PFPs in room', hint: '(no effect until profiles exist)' });
+  rows.push({ type: 'toggle', key: 'pfps', text: 'PFPs in room', hint: '(small pictures next to names in chat)' });
   rows.push({
     type: 'cycle', key: 'ui', text: 'UI style',
     options: ['modern', 'classic'], labels: { modern: '2.0', classic: '1.0' },
-    hint: '(no visible change until 1.0 is merged in)',
+    hint: '(1.0 hides chat pictures, more changes once 1.0 is merged in)',
   });
   rows.push({ type: 'head', text: 'language' });
   rows.push({ type: 'radio', key: 'language', value: 'English', text: 'English' });
@@ -852,6 +1062,7 @@ function activateSetting() {
     if (r.key === 'size') applySize();
   } else if (r.type === 'toggle') {
     settings[r.key] = !settings[r.key];
+    if (r.key === 'pfps') applyPfps();
   } else if (r.type === 'cycle') {
     const i = r.options.indexOf(settings[r.key]);
     settings[r.key] = r.options[(i + 1) % r.options.length];
@@ -1433,7 +1644,7 @@ function infoNode(p) {
     line.append(el('span', 'c', label + ' '), document.createTextNode(value));
     d.appendChild(line);
   };
-  row('Login:', p.username);
+  row('Username:', p.username);
   row('Name:', p.display);
   row('Joined:', p.created ? new Date(p.created).toISOString().slice(0, 10) : '—');
   const tags = String(p.badges).split(',').map(t => t.trim()).filter(Boolean);
@@ -1471,7 +1682,7 @@ function profileNode(raw) {
     box.append(row, strip);
   }
   box.appendChild(bioNode(p));
-  frameEl(box, 'finger ' + p.username);
+  frameEl(box, p.username + "'s profile");
   return box;
 }
 

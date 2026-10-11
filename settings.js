@@ -69,8 +69,14 @@ export function applyTheme(id = settings.theme) {
   applyColors(getTheme(id));
 }
 
+export function applyPfps() {
+  const off = !settings.pfps || settings.ui === 'classic';
+  document.body.classList.toggle('no-pfps', off);
+}
+
 export function applyUi() {
   document.body.classList.toggle('ui-classic', settings.ui === 'classic');
+  applyPfps();
 }
 
 export function applySize() {

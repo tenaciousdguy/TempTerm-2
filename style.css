@@ -519,3 +519,37 @@ nav { width: 330px; }
 .crright { min-width: 230px; max-width: 320px; }
 .crout { display: block; border: 1px solid var(--line); }
 .crbtns { margin-top: 22px; max-width: 260px; }
+
+.pfsq {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 16px;
+  height: 16px;
+  flex: none;
+  overflow: hidden;
+  background: #9a9a9a;
+  color: #0c0c0c;
+  font-size: 11px;
+  line-height: 1;
+  font-weight: normal;
+}
+.pfsq img { width: 100%; height: 100%; display: block; }
+.cpf { margin-right: 8px; vertical-align: -3px; }
+.no-pfps .cpf { display: none; }
+
+.who { cursor: pointer; }
+.who:hover .wname { text-decoration: underline; }
+
+.pcard.fr { position: absolute; z-index: 30; width: 250px; background: var(--panel); font-size: 13px; }
+.pcrow { display: flex; gap: 12px; align-items: center; }
+.pcard .fbtn { height: 30px; margin: 8px 0 4px; }
+
+.wl.fr { position: absolute; left: 16px; bottom: 58px; z-index: 30; width: 320px; background: var(--panel); }
+.wrow { position: relative; display: flex; gap: 10px; align-items: center; height: 28px; padding-left: 20px; }
+.wrow.sel { color: var(--bright); }
+.wmark { position: absolute; left: 0; width: 1ch; }
+
+.pv { position: absolute; inset: 0; z-index: 40; overflow-y: auto; padding: 24px 32px 48px; background: rgba(0, 0, 0, 0.88); text-align: left; }
+.pv[hidden], .pcard[hidden], .wl[hidden] { display: none; }
+.pvhint { margin-bottom: 14px; font-style: italic; }

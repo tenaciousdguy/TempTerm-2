@@ -55,6 +55,12 @@ export async function fbInit() {
   return { uid: user.uid, anonymous: user.isAnonymous };
 }
 
+export async function fbGetUser(uid) {
+  const snap = await get(ref(db, `users/${uid}`));
+  if (!snap.exists()) return null;
+  return snap.val();
+}
+
 export async function fbLoadProfile(uid) {
   const [user, badges] = await Promise.all([
     get(ref(db, `users/${uid}`)),
