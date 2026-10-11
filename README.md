@@ -7,7 +7,7 @@ Built with Electron and Firebase. Work in progress.
 -------------------------------------------------------
 
 ## Status
-Rooms, chat, and the room searcher work. Accounts and profiles are next.
+Accounts and profiles done. A few little things left i think
 
 ### Other...
 source is public to view, all rights reserved.
