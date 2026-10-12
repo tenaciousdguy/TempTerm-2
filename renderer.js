@@ -1,5 +1,5 @@
 import {
-  watchConnection, fbInit, fbLoadProfile, fbSaveProfile, fbUsernameFree, fbSignUp, fbSignIn, fbSignOut, fbSendReset, fbGetUser,
+  watchConnection, fbInit, fbLoadProfile, fbSaveProfile, fbSendReport, fbWatchNotices, fbClearNotice, fbWatchProfile, fbChangeUsername, fbUsernameFree, fbSignUp, fbSignIn, fbSignOut, fbSendReset, fbGetUser,
   fbEmailVerified, fbResendVerification,
   fbCreateRoom, fbJoinRoom, fbLeaveRoom, fbCleanup,
   fbSendMessage, fbWatchRoom, fbListRooms,
@@ -35,12 +35,18 @@ function el(tag, cls, text) {
 const screens = {};
 
 document.addEventListener('keydown', e => {
+  if (noticeUi.open) {
+    e.preventDefault();
+    if (e.key === 'Enter' || e.key === 'Escape' || e.key === ' ') dismissNotice();
+    return;
+  }
   const s = screens[current];
   if (s && s.key) s.key(e);
 });
 
 let lastWheel = 0;
 document.addEventListener('wheel', e => {
+  if (noticeUi.open) return;
   const s = screens[current];
   if (!s || !s.wheel) return;
   const now = Date.now();
@@ -50,6 +56,7 @@ document.addEventListener('wheel', e => {
 });
 
 document.addEventListener('click', () => {
+  if (noticeUi.open) return;
   if (current === 'splash' && splashReady) leaveSplash();
 });
 
@@ -111,6 +118,7 @@ const steps = [
           if (profile) { setAccount(info.uid, profile); account.verified = await fbEmailVerified(); }
           else me.uid = await fbSignOut();
         }
+        startLive();
         const last = localStorage.getItem('lastRoom');
         if (last) { await fbCleanup(last).catch(() => {}); localStorage.removeItem('lastRoom'); }
         return true;
@@ -608,6 +616,7 @@ document.getElementById('log').addEventListener('mouseup', () => {
 
 screens.chat = {
   key: e => {
+    if (chatUi.rp) return rpKey(e);
     if (chatUi.pv) return pvKey(e);
     if (chatUi.who) return whoKey(e);
     if (e.key === 'Escape') {
@@ -616,12 +625,15 @@ screens.chat = {
     }
     if (e.key === 'Tab') { e.preventDefault(); openWho(); }
   },
-  wheel: dir => { if (chatUi.who) moveWho(dir); },
+  wheel: dir => {
+    if (chatUi.rp) rpMove(dir);
+    else if (chatUi.who) moveWho(dir);
+  },
 };
 
 // ---------- people in chat ----------
 const userCache = new Map();
-const chatUi = { card: false, who: false, pv: false, whoSel: 0, whoList: [] };
+const chatUi = { card: false, who: false, pv: false, rp: false, whoSel: 0, whoList: [], pvUid: null, pvUser: null };
 
 function getUser(uid) {
   if (!uid) return Promise.resolve(null);
@@ -679,10 +691,11 @@ function closeCard() {
 }
 
 function resetChatUi() {
-  chatUi.card = chatUi.who = chatUi.pv = false;
+  chatUi.card = chatUi.who = chatUi.pv = chatUi.rp = false;
   $('card').hidden = true;
   $('wl').hidden = true;
   $('pv').hidden = true;
+  $('rp').hidden = true;
 }
 
 async function openCard(anchor) {
@@ -722,12 +735,16 @@ async function openProfileOverlay(uid, name) {
   const holder = $('pv-card');
   holder.innerHTML = '';
   let node;
+  let user = null;
   if (uid && account && uid === account.uid) node = profileNode(account.profile);
   else {
-    const u = uid ? await fbLoadProfile(uid).catch(() => null) : null;
-    node = u ? profileNode(u) : guestNode(name);
+    user = uid ? await fbLoadProfile(uid).catch(() => null) : null;
+    node = user ? profileNode(user) : guestNode(name);
   }
   holder.appendChild(node);
+  chatUi.pvUid = uid;
+  chatUi.pvUser = user;
+  $('pv-report').hidden = !user;
   $('pv').hidden = false;
   $('pv').scrollTop = 0;
   chatUi.pv = true;
@@ -746,6 +763,216 @@ function pvKey(e) {
   if (key === 'escape' || key === 'enter') closePv();
   else if (key === 'arrowdown' || key === 's') $('pv').scrollBy({ top: 60 });
   else if (key === 'arrowup' || key === 'w') $('pv').scrollBy({ top: -60 });
+  else if (key === 'r') openReport();
+}
+
+$('pv-report').addEventListener('click', e => { e.stopPropagation(); openReport(); });
+
+// ---------- reporting ----------
+const RP_FIELDS = [
+  ['username', 'Username'],
+  ['display', 'Display name'],
+  ['pfp', 'Profile picture'],
+  ['banner', 'Banner'],
+  ['bio', 'Bio'],
+];
+const rpt = { uid: null, user: null, rows: [], cur: 0, checks: {}, busy: false, input: null, allBox: null, boxes: {} };
+
+function rpMsg(text, kind) {
+  const m = $('rp-line');
+  if (!m) return;
+  m.textContent = text;
+  m.className = 'rpmsg ' + (kind === 'err' ? 'fail' : kind === 'ok' ? 'ok' : 'dim');
+}
+
+function rpPreview(key, p) {
+  const box = el('span', 'rpprev');
+  if (key === 'username') box.textContent = '@' + p.username;
+  else if (key === 'display') box.textContent = p.display;
+  else if (key === 'bio') box.textContent = p.bio ? p.bio.slice(0, 60) : 'no bio';
+  else if (key === 'pfp') {
+    const pf = el('span', 'pfsq');
+    fillPfp(pf, p, 24);
+    box.append(pf, p.pfpMode === 'image' ? 'image' : 'letter ' + p.letter);
+  } else if (key === 'banner') {
+    if (p.bannerMode === 'image') {
+      const img = el('img');
+      img.src = p.bannerImg;
+      img.alt = '';
+      box.appendChild(img);
+    } else box.textContent = p.bannerMode;
+  }
+  return box;
+}
+
+function rpSync() {
+  RP_FIELDS.forEach(([key]) => { rpt.boxes[key].textContent = rpt.checks[key] ? '[x]' : '[ ]'; });
+  rpt.allBox.textContent = RP_FIELDS.every(([key]) => rpt.checks[key]) ? '[x]' : '[ ]';
+}
+
+function rpFocus(i) {
+  rpt.cur = i;
+  rpt.rows.forEach((r, n) => r.row.classList.toggle('on', n === i));
+  const r = rpt.rows[i];
+  if (r.input) r.input.focus();
+  else if (document.activeElement && document.activeElement !== document.body) document.activeElement.blur();
+  r.row.scrollIntoView({ block: 'nearest' });
+}
+
+function rpMove(step) {
+  rpFocus((rpt.cur + step + rpt.rows.length) % rpt.rows.length);
+}
+
+function openReport() {
+  const uid = chatUi.pvUid;
+  const user = chatUi.pvUser;
+  if (!uid || !user || (account && uid === account.uid)) return;
+  rpt.uid = uid;
+  rpt.user = withDefaults(user);
+  rpt.checks = {};
+  rpt.boxes = {};
+  rpt.rows = [];
+  rpt.cur = 0;
+  rpt.busy = false;
+
+  const body = $('rp-body');
+  body.innerHTML = '';
+  const card = el('div', 'rpcard');
+  body.appendChild(card);
+  card.appendChild(el('p', 'ptitle', 'Report ' + rpt.user.display));
+  card.appendChild(el('p', 'fintro dim small', 'tick what is wrong. we attach it automatically (images as images, text as text) and add your message.'));
+
+  const addRow = (row, kind, act, input) => {
+    const i = rpt.rows.length;
+    rpt.rows.push({ row, kind, act, input });
+    row.addEventListener('click', ev => {
+      if (input) { rpFocus(i); return; }
+      rpFocus(i);
+      if (act) act(ev);
+    });
+    card.appendChild(row);
+  };
+
+  RP_FIELDS.forEach(([key, label]) => {
+    const row = el('div', 'rprow');
+    const box = el('span', 'rpbox', '[ ]');
+    rpt.boxes[key] = box;
+    row.append(box, el('span', '', label), rpPreview(key, rpt.user));
+    addRow(row, 'check', () => { rpt.checks[key] = !rpt.checks[key]; rpSync(); });
+  });
+
+  const all = el('div', 'rprow');
+  rpt.allBox = el('span', 'rpbox', '[ ]');
+  all.append(rpt.allBox, el('span', '', 'Everything'));
+  addRow(all, 'check', () => {
+    const on = !RP_FIELDS.every(([key]) => rpt.checks[key]);
+    RP_FIELDS.forEach(([key]) => { rpt.checks[key] = on; });
+    rpSync();
+  });
+
+  const msgRow = el('div', 'frow');
+  msgRow.style.marginTop = '14px';
+  msgRow.appendChild(el('label', 'flabel', 'Your message (optional)'));
+  const input = el('input', 'finput');
+  input.type = 'text';
+  input.maxLength = 300;
+  input.autocomplete = 'off';
+  input.spellcheck = false;
+  input.placeholder = "what's wrong?";
+  msgRow.appendChild(input);
+  rpt.input = input;
+  addRow(msgRow, 'input', null, input);
+  input.addEventListener('focus', () => {
+    const i = rpt.rows.findIndex(r => r.input === input);
+    rpt.cur = i;
+    rpt.rows.forEach((r, n) => r.row.classList.toggle('on', n === i));
+  });
+
+  const send = el('button', 'fbtn primary', 'Send report');
+  send.tabIndex = -1;
+  send.style.marginTop = '14px';
+  send.addEventListener('click', () => send.blur());
+  addRow(send, 'btn', rpSend);
+
+  const cancel = el('button', 'fbtn link', 'Cancel');
+  cancel.tabIndex = -1;
+  cancel.addEventListener('click', () => cancel.blur());
+  addRow(cancel, 'btn', () => closeReport(false));
+
+  card.appendChild(el('p', 'rpmsg dim', ''));
+  card.lastChild.id = 'rp-line';
+  card.appendChild(el('p', 'dim small', '↑ ↓ / W S = move | Enter or Space = choose | Escape = back'));
+
+  rpSync();
+  $('rp').hidden = false;
+  $('rp').scrollTop = 0;
+  chatUi.rp = true;
+  $('msg').blur();
+  rpFocus(0);
+}
+
+function closeReport(sent) {
+  chatUi.rp = false;
+  $('rp').hidden = true;
+  if (sent) {
+    closePv();
+    addLocalLine('[system]: report sent. thank you!');
+  }
+}
+
+async function rpSend() {
+  if (rpt.busy) return;
+  const picked = RP_FIELDS.map(f => f[0]).filter(k => rpt.checks[k]);
+  if (!picked.length) return rpMsg('tick at least one thing to report.', 'err');
+
+  rpt.busy = true;
+  rpMsg('sending...', 'dim');
+  try {
+    const fresh = await fbGetUser(rpt.uid);
+    if (!fresh) return rpMsg('that profile could not be loaded.', 'err');
+
+    const snap = { username: fresh.username, display: fresh.display };
+    if (picked.includes('bio') && fresh.bio) snap.bio = fresh.bio;
+    if (picked.includes('pfp')) ['letter', 'pfpMode', 'pfpImg'].forEach(k => { if (fresh[k]) snap[k] = fresh[k]; });
+    if (picked.includes('banner')) ['bannerMode', 'bannerImg'].forEach(k => { if (fresh[k]) snap[k] = fresh[k]; });
+
+    const fields = {};
+    picked.forEach(k => { fields[k] = true; });
+    const message = rpt.input.value.trim() || '(no message)';
+
+    const res = await fbSendReport({ target: rpt.uid, fields, message, snap });
+    if (res.error) return rpMsg(res.error, 'err');
+    closeReport(true);
+  } catch (e) {
+    console.error(e);
+    rpMsg('something went wrong: ' + (e.message || e), 'err');
+  } finally {
+    rpt.busy = false;
+  }
+}
+
+function rpKey(e) {
+  const r = rpt.rows[rpt.cur];
+  const typing = r.kind === 'input' && document.activeElement === r.input;
+  const key = e.key.toLowerCase();
+
+  if (key === 'tab') { e.preventDefault(); return rpMove(e.shiftKey ? -1 : 1); }
+
+  if (typing) {
+    if (key === 'escape') { e.preventDefault(); r.input.blur(); }
+    else if (key === 'arrowdown' || key === 'enter') { e.preventDefault(); rpMove(1); }
+    else if (key === 'arrowup') { e.preventDefault(); rpMove(-1); }
+    return;
+  }
+
+  if (key === 'escape') return closeReport(false);
+  e.preventDefault();
+  if (key === 'arrowdown' || key === 's') rpMove(1);
+  else if (key === 'arrowup' || key === 'w') rpMove(-1);
+  else if (key === 'enter' || key === ' ') {
+    if (r.act) r.act();
+    else if (r.input) r.input.focus();
+  }
 }
 
 function renderWho() {
@@ -1262,6 +1489,7 @@ async function logout() {
   try {
     me.uid = await fbSignOut();
     account = null;
+    startLive();
     me.name = randomGuestName();
     render();
     say('[system]: logged out. you are a guest again.');
@@ -1446,6 +1674,7 @@ async function doSignup(v) {
   if (res.error) return formMsg(res.error, 'err');
   const full = await fbLoadProfile(res.uid);
   setAccount(res.uid, full || res.profile);
+  startLive();
   finishAuth('[system]: welcome, ' + res.profile.display + '! check your email to verify your address.');
 }
 
@@ -1479,16 +1708,18 @@ async function doSignin(v) {
 
   formMsg('signing in...', 'dim');
   const res = await fbSignIn(email, v.password);
-  if (res.error) {
-    if (res.uid) me.uid = res.uid;
+    if (res.error) {
+    if (res.uid) { me.uid = res.uid; startLive(); }
     return formMsg(res.error, 'err');
   }
   if (!res.profile) {
     me.uid = await fbSignOut();
+    startLive();
     return formMsg('this account has no profile yet. contact the developer.', 'err');
   }
   setAccount(res.uid, res.profile);
   account.verified = await fbEmailVerified();
+  startLive();
   finishAuth('[system]: signed in as ' + res.profile.display + '.');
 }
 
@@ -1847,6 +2078,28 @@ function openEditProfile() {
 
   const details = section('Details');
   field(details, 'Display name', 'display', 20, { id: 'display' });
+    if (account.profile.usernameReset === true) {
+    const urow = newRow(details, 'frow');
+    ep.idx.username = ep.rows.length - 1;
+    const uwrap = el('div', 'fwrap');
+    uwrap.appendChild(el('label', 'flabel', 'New username (an admin reset yours, you can change it once)'));
+    const uinput = el('input', 'finput');
+    uinput.type = 'text';
+    uinput.maxLength = 16;
+    uinput.autocomplete = 'off';
+    uinput.spellcheck = false;
+    uinput.placeholder = 'choose a username';
+    const unote = el('span', 'fnote dim');
+    uinput.addEventListener('input', () => { ep.s.username = uinput.value; checkUsername(uinput.value, unote); });
+    uwrap.append(uinput, unote);
+    add(urow, uwrap, 'input', null, uinput);
+  } else {
+    const lock = el('div', 'frow locked');
+    lock.appendChild(el('label', 'flabel', 'Username'));
+    lock.appendChild(el('div', 'finput dis', '@' + account.username));
+    lock.appendChild(el('span', 'fnote dim', "usernames are not changeable. to change your username, email me! contacttempterm@gmail.com"));
+    details.appendChild(lock);
+  }
   field(details, 'Bio', 'bio', 200, { area: true });
   const colorRow = newRow(details, 'frow');
   const sw = el('div', 'swatchrow');
@@ -1952,8 +2205,23 @@ async function epSave() {
   if (!display) { epMsg("display name can't be empty.", 'err'); return epFocus(ep.idx.display, 0); }
   if (!letter) { epMsg('pick one character for the picture letter.', 'err'); return epFocus(ep.idx.letter, 0); }
 
+  const canRename = account.profile.usernameReset === true;
+  const newName = (s.username || '').trim();
+  if (canRename && newName) {
+    if (!USERNAME_RE.test(newName)) { epMsg('username: 3-16 letters, numbers or _', 'err'); return epFocus(ep.idx.username, 0); }
+    if (RESERVED_RE.test(newName)) { epMsg('that username is reserved.', 'err'); return epFocus(ep.idx.username, 0); }
+  }
+
   ep.busy = true;
   epMsg('saving...', 'dim');
+  if (canRename && newName && newName !== account.username) {
+    const renamed = await fbChangeUsername(account.username, newName);
+    if (renamed.error) {
+      ep.busy = false;
+      epMsg(renamed.error, 'err');
+      return epFocus(ep.idx.username, 0);
+    }
+  }
   const res = await fbSaveProfile(account.uid, {
     layout: s.layout,
     accent: s.accent,
@@ -2224,6 +2492,63 @@ screens.crop = {
   },
   wheel: dir => cropZoom(-dir * 0.15),
 };
+
+// ---------- notices and live profile ----------
+const noticeUi = { open: false, queue: [], cur: null, stopNotices: null, stopProfile: null };
+
+function showNextNotice() {
+  if (noticeUi.open || !noticeUi.queue.length) return;
+  const n = noticeUi.queue.shift();
+  noticeUi.cur = n;
+  noticeUi.open = true;
+  if (document.activeElement && document.activeElement !== document.body) document.activeElement.blur();
+  const box = $('notice-box');
+  box.innerHTML = '';
+  box.appendChild(el('p', 'ntext', n.text));
+  box.appendChild(el('p', 'dim small', 'press Enter or click to continue'));
+  frameEl(box, n.kind === 'thanks' ? 'thank you' : 'notice');
+  $('notice').hidden = false;
+}
+
+function dismissNotice() {
+  const n = noticeUi.cur;
+  noticeUi.open = false;
+  noticeUi.cur = null;
+  $('notice').hidden = true;
+  if (n) fbClearNotice(n.uid, n.key);
+  if (current === 'chat' && !chatUi.pv && !chatUi.rp && !chatUi.who) $('msg').focus();
+  showNextNotice();
+}
+
+$('notice').addEventListener('click', e => { e.stopPropagation(); dismissNotice(); });
+
+function onNotice(uid, key, n) {
+  noticeUi.queue.push({ uid, key, kind: n.kind, text: String(n.text || '') });
+  if (n.kind === 'reset' && (current === 'editprofile' || current === 'crop')) show('profile');
+  showNextNotice();
+}
+
+function onProfileLive(val) {
+  if (!val || !account) return;
+  const badges = account.profile.badges;
+  account.profile = { ...val, badges };
+  account.username = val.username;
+  account.display = val.display;
+  me.name = val.display;
+  if (current === 'profile') renderProfile();
+  else if (current === 'menu') render();
+}
+
+function startLive() {
+  if (noticeUi.stopNotices) noticeUi.stopNotices();
+  if (noticeUi.stopProfile) noticeUi.stopProfile();
+  noticeUi.stopNotices = null;
+  noticeUi.stopProfile = null;
+  if (!me.uid) return;
+  const uid = me.uid;
+  noticeUi.stopNotices = fbWatchNotices(uid, (key, n) => onNotice(uid, key, n));
+  if (account) noticeUi.stopProfile = fbWatchProfile(uid, onProfileLive);
+}
 
 // ---------- tutorial ----------
 const tut = { active: false, step: 0, steps: [], last: 0, shown: false, filled: false, timers: [] };

@@ -1,7 +1,11 @@
 const { app, BrowserWindow, ipcMain, session } = require('electron');
 const path = require('path');
 
-if (process.env.TT_PROFILE) {
+const adminMode = process.argv.includes('--admin');
+
+if (adminMode) {
+  app.setPath('userData', path.join(app.getPath('appData'), 'tempterm2-admin'));
+} else if (process.env.TT_PROFILE) {
   app.setPath('userData', path.join(app.getPath('appData'), 'tempterm2-' + process.env.TT_PROFILE));
 }
 
@@ -13,17 +17,18 @@ const SIZES = {
 
 function createWindow() {
   const win = new BrowserWindow({
-    width: 800,
-    height: 600,
-    resizable: false,
+    width: adminMode ? 1000 : 800,
+    height: adminMode ? 760 : 600,
+    resizable: adminMode,
     backgroundColor: '#0c0c0c',
     autoHideMenuBar: true,
     webPreferences: { preload: path.join(__dirname, 'preload.js') },
   });
-  win.loadFile('index.html');
+  win.loadFile(adminMode ? 'admin.html' : 'index.html');
 }
 
 ipcMain.handle('set-window-size', (event, key) => {
+  if (adminMode) return;
   const size = SIZES[key];
   const win = BrowserWindow.fromWebContents(event.sender);
   if (!size || !win) return;
@@ -33,9 +38,10 @@ ipcMain.handle('set-window-size', (event, key) => {
   win.setResizable(false);
 });
 
-ipcMain.handle('is-dev', () => true); // Forces dev mode to stay active for testing
+ipcMain.handle('is-dev', () => !app.isPackaged);
 
 ipcMain.handle('reset-all', async event => {
+  if (app.isPackaged) return;
   await session.defaultSession.clearStorageData();
   await session.defaultSession.clearCache();
   const win = BrowserWindow.fromWebContents(event.sender);

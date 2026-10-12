@@ -61,6 +61,58 @@ export async function fbGetUser(uid) {
   return snap.val();
 }
 
+export function fbWatchNotices(uid, cb) {
+  return onChildAdded(ref(db, `notices/${uid}`), snap => cb(snap.key, snap.val()), err => console.error('notices:', err));
+}
+
+export function fbClearNotice(uid, key) {
+  return remove(ref(db, `notices/${uid}/${key}`)).catch(err => console.error(err));
+}
+
+export function fbWatchProfile(uid, cb) {
+  return onValue(ref(db, `users/${uid}`), snap => cb(snap.exists() ? snap.val() : null), err => console.error('profile watch:', err));
+}
+
+export async function fbChangeUsername(oldName, newName) {
+  const uid = auth.currentUser.uid;
+  const lower = newName.toLowerCase();
+  try {
+    const cur = await get(ref(db, `usernames/${lower}`));
+    if (cur.exists() && cur.val() !== uid) return { error: 'that username is taken.' };
+    if (!cur.exists()) await set(ref(db, `usernames/${lower}`), uid);
+  } catch (err) {
+    console.error(err);
+    return { error: 'that username is taken or not allowed.' };
+  }
+  try {
+    const old = await get(ref(db, `usernames/${oldName.toLowerCase()}`));
+    if (old.exists() && old.val() === uid && oldName.toLowerCase() !== lower) {
+      await remove(ref(db, `usernames/${oldName.toLowerCase()}`));
+    }
+    await update(ref(db, `users/${uid}`), { username: newName, usernameReset: null });
+    return {};
+  } catch (err) {
+    console.error(err);
+    return { error: 'could not change the username. try again.' };
+  }
+}
+
+export async function fbSendReport({ target, fields, message, snap }) {
+  try {
+    const write = set(push(ref(db, 'reports')), {
+      reporter: auth.currentUser.uid, target, fields, message, ts: serverTimestamp(), snap,
+    });
+    const timeout = new Promise((_, reject) => setTimeout(() => reject({ code: 'timeout' }), 15000));
+    await Promise.race([write, timeout]);
+    return {};
+  } catch (err) {
+    console.error('report failed:', err);
+    if (err.code === 'timeout') return { error: 'the server did not answer. check your connection and try again.' };
+    if (/permission/i.test(err.code || err.message || '')) return { error: 'the server refused the report (permission denied). are the new rules published?' };
+    return { error: 'could not send the report: ' + (err.code || err.message) };
+  }
+}
+
 export async function fbLoadProfile(uid) {
   const [user, badges] = await Promise.all([
     get(ref(db, `users/${uid}`)),

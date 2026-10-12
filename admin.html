@@ -1,0 +1,62 @@
+<!DOCTYPE html>
+<html>
+<head>
+  <meta charset="utf-8">
+  <title>TempTerm Admin</title>
+  <style>
+    * { box-sizing: border-box; border-radius: 0; }
+    body { margin: 0; background: #0c0c0c; color: #d4d4d4; font: 14px/1.6 Consolas, monospace; }
+    .dim { color: #6e6e6e; }
+    .ok { color: #4ade80; }
+    .fail { color: #f87171; }
+    .wrap { max-width: 900px; margin: 0 auto; padding: 20px 24px 60px; }
+    h1 { font-size: 18px; font-weight: normal; margin: 0 0 14px; }
+    input { display: block; width: 100%; height: 36px; margin: 4px 0 14px; padding: 0 10px; background: transparent; border: 1px solid #444; color: #fff; font: inherit; }
+    button { background: transparent; border: 1px solid #444; color: #d4d4d4; font: inherit; padding: 4px 12px; margin: 0 8px 8px 0; cursor: pointer; }
+    button:hover { border-color: #fff; color: #fff; }
+    button.danger { border-color: #7f1d1d; color: #f87171; }
+    button.primary { border-color: #4ade80; color: #4ade80; }
+    #login { max-width: 360px; margin: 80px auto; }
+    #panel[hidden], #login[hidden] { display: none; }
+    .bar { display: flex; justify-content: space-between; align-items: center; margin-bottom: 14px; }
+    .card { border: 1px solid #444; padding: 14px 16px; margin-bottom: 18px; background: #121212; }
+    .head { display: flex; justify-content: space-between; flex-wrap: wrap; gap: 8px; margin-bottom: 8px; }
+    .msg { border-left: 2px solid #facc15; padding: 2px 10px; margin: 8px 0 12px; white-space: pre-wrap; word-break: break-word; }
+    .field { margin: 10px 0; }
+    .ftitle { color: #facc15; }
+    .two { display: flex; gap: 20px; flex-wrap: wrap; }
+    .two > div { flex: 1; min-width: 240px; }
+    .lbl { font-size: 12px; color: #6e6e6e; }
+    .val { white-space: pre-wrap; word-break: break-word; border: 1px solid #2a2a2a; padding: 6px 8px; min-height: 34px; }
+    .val img { display: block; image-rendering: auto; max-width: 100%; }
+    .actions { margin-top: 12px; padding-top: 10px; border-top: 1px solid #2a2a2a; }
+    details { border: 1px solid #444; padding: 8px 14px; margin-top: 10px; }
+    summary { cursor: pointer; color: #facc15; }
+    details[open] summary { margin-bottom: 14px; }
+    .card.isdone { opacity: 0.85; }
+  </style>
+</head>
+<body>
+  <div id="login">
+    <h1>TempTerm Admin</h1>
+    <label class="dim">Email</label>
+    <input id="email" type="text" autocomplete="off">
+    <label class="dim">Password</label>
+    <input id="pass" type="password" autocomplete="off">
+    <button id="go" class="primary">Sign in</button>
+    <p id="lmsg" class="fail"></p>
+  </div>
+
+  <div id="panel" class="wrap" hidden>
+    <div class="bar">
+      <h1>Reports <span id="count" class="dim"></span></h1>
+      <div><button id="refresh">Refresh</button><button id="out">Sign out</button></div>
+    </div>
+    <p id="flash" class="dim"></p>
+    <div id="list"></div>
+    <details id="donebox"><summary id="donesum">Done (0)</summary><div id="donelist"></div></details>
+  </div>
+
+  <script type="module" src="admin.js"></script>
+</body>
+</html>

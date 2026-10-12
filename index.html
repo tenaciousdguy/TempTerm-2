@@ -64,9 +64,11 @@
     <div id="card" class="pcard" hidden></div>
     <div id="wl" class="wl" hidden></div>
     <div id="pv" class="pv" hidden>
-      <p class="pvhint dim small">↑ ↓ / W S = scroll | Enter or Escape = close</p>
+      <button id="pv-report" class="pvreport" tabindex="-1" hidden>[report]</button>
+      <p class="pvhint dim small">↑ ↓ / W S = scroll | R = report | Enter or Escape = close</p>
       <div id="pv-card"></div>
     </div>
+    <div id="rp" class="pv" hidden><div id="rp-body"></div></div>
   </section>
 
     <section id="changelog" class="screen page" hidden>
@@ -94,6 +96,8 @@
     <p id="te-msg" class="setmsg dim small"></p>
     <p class="hint dim small">↑ ↓ / W S / scroll = move | Enter = edit or choose | Escape = Cancel</p>
   </section>
+
+    <div id="notice" class="notice" hidden><div id="notice-box" class="nbox"></div></div>
 
   <button id="dev-reset" class="devbtn" tabindex="-1" hidden>reset</button>
 
