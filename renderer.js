@@ -1,16 +1,25 @@
 import {
-  watchConnection, fbInit, fbLoadProfile, fbSaveProfile, fbSendReport, fbLoadSettings, fbFinishProfile, fbSaveSettings, withTimeout, fbWatchNotices, fbClearNotice, fbWatchProfile, fbChangeUsername, fbUsernameFree, fbSignUp, fbSignIn, fbSignOut, fbSendReset, fbGetUser,
-  fbEmailVerified, fbResendVerification,
+  watchConnection, fbInit, fbLoadProfile, fbSaveProfile, fbUsernameFree, fbSignUp, fbSignIn, fbSignOut, fbSendReset,
+  fbEmailVerified, fbResendVerification, fbGetUser, fbSendReport,
+  fbWatchNotices, fbClearNotice, fbWatchProfile, fbChangeUsername,
+  fbLoadSettings, fbSaveSettings, fbFinishProfile, withTimeout,
   fbCreateRoom, fbJoinRoom, fbLeaveRoom, fbCleanup,
   fbSendMessage, fbWatchRoom, fbListRooms,
 } from './firebase.js';
-import { settings, save, THEMES, SIZES, applyTheme, applyColors, applyUi, applyPfps, applySize, getTheme, newThemeId } from './settings.js';
+import {
+  settings, save, THEMES, SIZES, applyTheme, applyColors, applyUi, applyPfps, applySize,
+  getTheme, newThemeId, setSaveHook, getSyncable, applyRemote,
+} from './settings.js';
 import { createGrid, scrollInto } from './ui.js';
-import { setSaveHook, getSyncable, applyRemote } from './settings.js';
 
 const $ = id => document.getElementById(id);
-const msgInput = document.getElementById('msg');
-const noticeUi = { open: false, queue: [], cur: null, stopNotices: null, stopProfile: null };
+
+function el(tag, cls, text) {
+  const node = document.createElement(tag);
+  if (cls) node.className = cls;
+  if (text !== undefined) node.textContent = text;
+  return node;
+}
 
 // ---------- state ----------
 function randomGuestName() {
@@ -29,17 +38,7 @@ let sessionOk = false;
 let needsSetup = false;
 const firstRun = localStorage.getItem('tutorialDone') !== '1';
 
-function el(tag, cls, text) {
-  const node = document.createElement(tag);
-  if (cls) node.className = cls;
-  if (text !== undefined) node.textContent = text;
-  return node;
-}
-
 // ---------- key router ----------
-// Every screen registers its own handlers here. One listener sends each key
-// (and each scroll of the wheel) to whichever screen is open, so a key that
-// opens a screen can never also be handled by the screen it opens.
 const screens = {};
 
 document.addEventListener('keydown', e => {
@@ -75,7 +74,7 @@ function show(id) {
   clearInterval(search.timer);
   clearInterval(verifyTimer);
   current = id;
-    $('offline').hidden = online || id === 'splash';
+  $('offline').hidden = online || id === 'splash';
   document.querySelectorAll('.screen').forEach(s => s.hidden = s.id !== id);
   if (id === 'menu') {
     if (!account) me.name = randomGuestName();
@@ -88,7 +87,7 @@ function show(id) {
   if (id === 'create') { create.step = 0; create.type = 0; create.limit = 10; busy = false; renderCreate(); }
   if (id === 'search') openSearch();
   if (id === 'chat') enterChat();
-  if (id === 'changelog') { oldOpen = false; renderChangelog(); document.getElementById('cl-scroll').scrollTop = 0; }
+  if (id === 'changelog') { oldOpen = false; renderChangelog(); $('cl-scroll').scrollTop = 0; }
   if (id === 'settings') openSettings();
   if (id === 'profile') renderProfile();
 }
@@ -99,7 +98,7 @@ function wait(ms) {
 }
 
 function setStatus(on) {
-  const status = document.getElementById('status');
+  const status = $('status');
   status.textContent = on ? '● server: connected' : '● server: not connected';
   status.classList.toggle('on', on);
 }
@@ -169,7 +168,7 @@ const steps = [
 ];
 
 async function boot() {
-  const out = document.getElementById('boot');
+  const out = $('boot');
   for (const step of steps) {
     if (!firstRun) out.innerHTML += step.label + '...';
     const [ok] = await Promise.all([step.run(), wait(firstRun ? 200 : 300 + Math.random() * 900)]);
@@ -178,7 +177,7 @@ async function boot() {
       out.innerHTML += ok ? ' <span class="ok">' + text + '</span>\n' : ' <span class="fail">failed</span>\n';
     }
   }
-  document.getElementById('tap').classList.add('show');
+  $('tap').classList.add('show');
   splashReady = true;
 }
 
@@ -206,7 +205,7 @@ const items = [
 let selected = 1;
 
 function renderAccount() {
-  const box = document.getElementById('account');
+  const box = $('account');
   box.classList.toggle('selected', selected === 0);
   box.textContent = '';
   const name = document.createElement('span');
@@ -218,7 +217,7 @@ function renderAccount() {
 }
 
 function renderMenu() {
-  const nav = document.getElementById('menu-items');
+  const nav = $('menu-items');
   nav.innerHTML = '';
   items.forEach((item, i) => {
     const div = document.createElement('div');
@@ -249,7 +248,7 @@ function render() {
 }
 
 function say(text) {
-  document.getElementById('sys').textContent = text;
+  $('sys').textContent = text;
 }
 
 function activate() {
@@ -269,11 +268,12 @@ function activate() {
   if (item.screen === 'search' || item.screen === 'create') {
     if (!sessionOk) { say('[system]: still signing in. one moment...'); return; }
   }
-  
-
-  if (item.screen) {
-    show(item.screen);
+  if (item.needsAccount && !account) {
+    say('[system]: sign in to use profiles.');
+    return;
   }
+  if ($(item.screen)) show(item.screen);
+  else say('[system]: ' + item.label + " isn't built yet.");
 }
 
 function move(step) {
@@ -306,9 +306,9 @@ const types = [
 ];
 
 function renderCreate() {
-  const q = document.getElementById('cr-q');
-  const body = document.getElementById('cr-body');
-  const hint = document.getElementById('cr-hint');
+  const q = $('cr-q');
+  const body = $('cr-body');
+  const hint = $('cr-hint');
   body.innerHTML = '';
 
   if (create.step === 0) {
@@ -343,7 +343,7 @@ let lastCreate = 0;
 
 async function startRoom() {
   if (busy) return;
-  const hint = document.getElementById('cr-hint');
+  const hint = $('cr-hint');
   if (!online) { hint.textContent = '[system]: offline. waiting for the server...'; return; }
   const left = 8000 - (Date.now() - lastCreate);
   if (left > 0) { hint.textContent = '[system]: wait ' + Math.ceil(left / 1000) + ' seconds before making another room.'; return; }
@@ -393,8 +393,8 @@ screens.create = {
 
 // ---------- room searcher ----------
 const search = { rooms: [], selLid: null, mode: 'list', timer: null };
-const sqInput = document.getElementById('sq');
-const codeInput = document.getElementById('code-in');
+const sqInput = $('sq');
+const codeInput = $('code-in');
 
 const hints = {
   list: '↑ ↓ / W S / scroll = choose | Enter = Join | / = Search | R = Refresh | Escape = Back',
@@ -403,13 +403,13 @@ const hints = {
 };
 
 function setSearchMsg(text) {
-  document.getElementById('s-msg').textContent = text;
+  $('s-msg').textContent = text;
 }
 
 function setMode(mode) {
   search.mode = mode;
-  document.getElementById('cp').hidden = mode !== 'code';
-  document.getElementById('s-hint').textContent = hints[mode];
+  $('cp').hidden = mode !== 'code';
+  $('s-hint').textContent = hints[mode];
   if (mode === 'text') sqInput.focus(); else sqInput.blur();
   if (mode === 'code') { codeInput.value = ''; codeInput.focus(); } else codeInput.blur();
 }
@@ -425,7 +425,7 @@ function selectedRoom() {
 }
 
 function renderRooms() {
-  const box = document.getElementById('rl');
+  const box = $('rl');
   const list = visibleRooms();
   if (list.length && !list.some(r => r.lid === search.selLid)) search.selLid = list[0].lid;
   box.innerHTML = '';
@@ -621,7 +621,7 @@ function startWatch() {
     onMembers: members => {
       room.members = members;
       const n = Object.keys(members).length;
-      document.getElementById('count').textContent =
+      $('count').textContent =
         n + ' chatter' + (n === 1 ? '' : 's') + ' in room (limit ' + room.limit + ')  ·  Tab = see who is here';
       if (online && me.uid && !members[me.uid] && !rj.busy) rejoinRoom();
     },
@@ -634,22 +634,75 @@ function startWatch() {
 
 function restartWatch() {
   if (stopWatch) { stopWatch(); stopWatch = null; }
-  document.getElementById('log').innerHTML = '';
+  $('log').innerHTML = '';
   startWatch();
 }
 
+async function leaveCurrentRoom() {
+  if (!room) return;
+  const { code, lid } = room;
+  const name = me.name;
+  resetChatUi();
+  if (stopWatch) { stopWatch(); stopWatch = null; }
+  room = null;
+  localStorage.removeItem('lastRoom');
+  show('menu');
+  try { await fbLeaveRoom(code, name, lid); } catch (e) { console.error(e); }
+}
+
+function lineEl(text, cls) {
+  const p = document.createElement('p');
+  p.className = cls || '';
+  p.textContent = text;
+  return p;
+}
+
+function msgEl(name, text, uid) {
+  const p = document.createElement('p');
+  const who = el('span', 'who');
+  who.dataset.uid = uid || '';
+  who.dataset.name = name;
+  const pf = el('span', 'pfsq cpf');
+  who.append(pf, el('span', 'wname', name));
+  p.append(who, ': ' + text);
+  getUser(uid).then(u => fillPfp(pf, u));
+  return p;
+}
+
+function isAfter(a, b) {
+  const ta = Number(a.dataset.ts), tb = Number(b.dataset.ts);
+  return ta !== tb ? ta > tb : a.dataset.key > b.dataset.key;
+}
+
+function insertLine(node, key, ts) {
+  node.dataset.key = key;
+  node.dataset.ts = ts || 0;
+  const log = $('log');
+  let prev = log.lastElementChild;
+  while (prev && isAfter(prev, node)) prev = prev.previousElementSibling;
+  log.insertBefore(node, prev ? prev.nextSibling : log.firstChild);
+  log.scrollTop = log.scrollHeight;
+}
+
+function addLocalLine(text) {
+  const log = $('log');
+  log.appendChild(lineEl(text, 'dim'));
+  log.scrollTop = log.scrollHeight;
+}
+
 function enterChat() {
-  document.getElementById('log').innerHTML = '';
-  document.getElementById('msg').value = '';
-  document.getElementById('count').textContent = '';
+  $('log').innerHTML = '';
+  $('msg').value = '';
+  $('count').textContent = '';
   userCache.clear();
   resetChatUi();
   room.members = {};
   rj.tries = [];
   startWatch();
-  document.getElementById('msg').focus();
+  $('msg').focus();
 }
 
+const msgInput = $('msg');
 const sendTimes = [];
 
 msgInput.addEventListener('keydown', e => {
@@ -668,7 +721,7 @@ msgInput.addEventListener('keydown', e => {
   });
 });
 
-document.getElementById('log').addEventListener('mouseup', () => {
+$('log').addEventListener('mouseup', () => {
   if (!window.getSelection().toString()) msgInput.focus();
 });
 
@@ -683,48 +736,8 @@ screens.chat = {
     }
     if (e.key === 'Tab') { e.preventDefault(); openWho(); }
   },
-    wheel: dir => { if (chatUi.who) moveWho(dir); },
+  wheel: dir => { if (chatUi.who) moveWho(dir); },
 };
-
-// ---------- missing chat helpers & room management ----------
-
-async function leaveCurrentRoom() {
-  if (room) {
-    await fbLeaveRoom(room.code, me.uid).catch(() => {});
-    localStorage.removeItem('lastRoom');
-  }
-  if (stopWatch) { stopWatch(); stopWatch = null; }
-  room = null;
-  resetChatUi();
-  show('menu');
-}
-
-function lineEl(text, cls) {
-  const div = el('div', cls);
-  div.textContent = text;
-  return div;
-}
-
-function msgEl(name, text, uid) {
-  const div = el('div', 'msg-row');
-  const who = el('span', 'who', name);
-  if (uid) who.dataset.uid = uid;
-  who.dataset.name = name;
-  const content = el('span', '', ': ' + text);
-  div.append(who, content);
-  return div;
-}
-
-function insertLine(node) {
-  const log = document.getElementById('log');
-  log.appendChild(node);
-  log.scrollTop = log.scrollHeight;
-}
-
-function addLocalLine(text) {
-  const node = lineEl(text, 'dim');
-  insertLine(node);
-}
 
 // ---------- people in chat ----------
 const userCache = new Map();
@@ -765,7 +778,7 @@ function guestNode(name) {
   const pf = el('div', 'pfb', '?');
   pf.style.cssText = 'width:64px;height:64px;background:#9a9a9a;font-size:32px';
   const info = el('div', 'pinfo');
-  [['Username:', 'guest (no account)'], ['Name:', name || 'guest'], ['Joined:', 'just now']].forEach(([a, b]) => {
+  [['Login:', 'guest (no account)'], ['Name:', name || 'guest'], ['Joined:', 'just now']].forEach(([a, b]) => {
     const line = el('div');
     line.append(el('span', 'c', a + ' '), document.createTextNode(b));
     info.appendChild(line);
@@ -774,9 +787,9 @@ function guestNode(name) {
   row.append(pf, info);
   const bio = el('div', 'pbio');
   bio.append(el('span', 'dim', 'bio'),
-    document.createTextNode('\nthis user is a guest!\nwhich means they are a stupid butthead'));
+    document.createTextNode('\nthis user is a guest!\nno profile, no plans, no commitments.\nthey vanish when the room does.'));
   box.append(row, bio);
-  frameEl(box, 'guest\'s profile');
+  frameEl(box, 'finger guest');
   return box;
 }
 
@@ -862,6 +875,70 @@ function pvKey(e) {
 }
 
 $('pv-report').addEventListener('click', e => { e.stopPropagation(); openReport(); });
+
+function renderWho() {
+  const box = $('wl');
+  box.innerHTML = '';
+  chatUi.whoList.forEach((m, i) => {
+    const on = i === chatUi.whoSel;
+    const row = el('div', 'wrow' + (on ? ' sel' : ''));
+    const pf = el('span', 'pfsq mpf');
+    row.append(el('span', 'wmark', on ? '>' : ''), pf, el('span', '', m.name + (m.uid === me.uid ? ' (you)' : '')));
+    getUser(m.uid).then(u => fillPfp(pf, u));
+    box.appendChild(row);
+  });
+  box.appendChild(el('div', 'dim small', '↑ ↓ = choose | Enter = view profile | Esc = close'));
+  frameEl(box, 'in this room');
+  box.hidden = false;
+}
+
+function openWho() {
+  const members = room && room.members ? Object.entries(room.members) : [];
+  if (!members.length) return;
+  chatUi.whoList = members
+    .map(([uid, m]) => ({ uid, name: m.name || 'guest' }))
+    .sort((a, b) => a.name.localeCompare(b.name));
+  chatUi.whoSel = Math.max(0, chatUi.whoList.findIndex(m => m.uid === me.uid));
+  closeCard();
+  chatUi.who = true;
+  $('msg').blur();
+  renderWho();
+}
+
+function closeWho() {
+  chatUi.who = false;
+  $('wl').hidden = true;
+  $('msg').focus();
+}
+
+function moveWho(step) {
+  chatUi.whoSel = (chatUi.whoSel + step + chatUi.whoList.length) % chatUi.whoList.length;
+  renderWho();
+}
+
+function whoKey(e) {
+  const key = e.key.toLowerCase();
+  e.preventDefault();
+  if (key === 'escape' || key === 'tab') closeWho();
+  else if (key === 'arrowdown' || key === 's') moveWho(1);
+  else if (key === 'arrowup' || key === 'w') moveWho(-1);
+  else if (key === 'enter') {
+    const m = chatUi.whoList[chatUi.whoSel];
+    closeWho();
+    openProfileOverlay(m.uid, m.name);
+  }
+}
+
+$('log').addEventListener('click', e => {
+  const who = e.target.closest('.who');
+  if (!who) return;
+  e.stopPropagation();
+  openCard(who);
+});
+
+$('chat').addEventListener('click', e => {
+  if (chatUi.card && !e.target.closest('#card')) closeCard();
+});
 
 // ---------- reporting ----------
 const RP_FIELDS = [
@@ -994,8 +1071,9 @@ function openReport() {
   cancel.addEventListener('click', () => cancel.blur());
   addRow(cancel, 'btn', () => closeReport(false));
 
-  card.appendChild(el('p', 'rpmsg dim', ''));
-  card.lastChild.id = 'rp-line';
+  const line = el('p', 'rpmsg dim', '');
+  line.id = 'rp-line';
+  card.appendChild(line);
   card.appendChild(el('p', 'dim small', '↑ ↓ / W S = move | Enter or Space = choose | Escape = back'));
 
   rpSync();
@@ -1070,79 +1148,18 @@ function rpKey(e) {
   }
 }
 
-function renderWho() {
-  const box = $('wl');
-  box.innerHTML = '';
-  chatUi.whoList.forEach((m, i) => {
-    const on = i === chatUi.whoSel;
-    const row = el('div', 'wrow' + (on ? ' sel' : ''));
-    const pf = el('span', 'pfsq mpf');
-    row.append(el('span', 'wmark', on ? '>' : ''), pf, el('span', '', m.name + (m.uid === me.uid ? ' (you)' : '')));
-    getUser(m.uid).then(u => fillPfp(pf, u));
-    box.appendChild(row);
-  });
-  box.appendChild(el('div', 'dim small', '↑ ↓ = choose | Enter = view profile | Esc = close'));
-  frameEl(box, 'in this room');
-  box.hidden = false;
-}
-
-function openWho() {
-  const members = room && room.members ? Object.entries(room.members) : [];
-  if (!members.length) return;
-  chatUi.whoList = members
-    .map(([uid, m]) => ({ uid, name: m.name || 'guest' }))
-    .sort((a, b) => a.name.localeCompare(b.name));
-  chatUi.whoSel = Math.max(0, chatUi.whoList.findIndex(m => m.uid === me.uid));
-  closeCard();
-  chatUi.who = true;
-  $('msg').blur();
-  renderWho();
-}
-
-function closeWho() {
-  chatUi.who = false;
-  $('wl').hidden = true;
-  $('msg').focus();
-}
-
-function moveWho(step) {
-  chatUi.whoSel = (chatUi.whoSel + step + chatUi.whoList.length) % chatUi.whoList.length;
-  renderWho();
-}
-
-function whoKey(e) {
-  const key = e.key.toLowerCase();
-  e.preventDefault();
-  if (key === 'escape' || key === 'tab') closeWho();
-  else if (key === 'arrowdown' || key === 's') moveWho(1);
-  else if (key === 'arrowup' || key === 'w') moveWho(-1);
-  else if (key === 'enter') {
-    const m = chatUi.whoList[chatUi.whoSel];
-    closeWho();
-    openProfileOverlay(m.uid, m.name);
-  }
-}
-
-$('log').addEventListener('click', e => {
-  const who = e.target.closest('.who');
-  if (!who) return;
-  e.stopPropagation();
-  openCard(who);
-});
-
-$('chat').addEventListener('click', e => {
-  if (chatUi.card && !e.target.closest('#card')) closeCard();
-});
-
 // ---------- changelog ----------
 const changelog = {
   current: [
     'Rebuilt from scratch',
-    'New boot screen',
-    'Guest mode: a fresh guest name every time you load the menu',
-    'Accounts / Profiles (hopefully fully working)',
-    'Tutorial when you first open the app',
-    'Settings re-built',
+    'New boot screen that checks the server and signs you in',
+    'Guest mode: a fresh guest name every time you reach the menu',
+    'Private rooms now show up in the Room Searcher (enter the code to join)',
+    'People who join late can see the room history, including join and leave lines',
+    'Rooms close automatically when everyone leaves, and the messages go with them',
+    'Press Escape to leave a room',
+    'Arrow keys, W / S and the scroll wheel work in every menu',
+    'Text in chat can be selected and copied',
   ],
   old: [
     { v: '1.5', notes: [
@@ -1226,10 +1243,10 @@ const changelog = {
 let oldOpen = false;
 
 function renderChangelog() {
-  const body = document.getElementById('cl-body');
+  const body = $('cl-body');
   body.innerHTML = '';
 
-  body.appendChild(el('p', 'vhead first ok', '2.0 PR 1 Updates:'));
+  body.appendChild(el('p', 'vhead first ok', '2.0 Updates:'));
   changelog.current.forEach(note => body.appendChild(el('p', 'ok', '- ' + note)));
 
   const toggle = el('p', 'toggle', '> ' + (oldOpen ? '[-]' : '[+]') + ' 1.x Updates:');
@@ -1246,7 +1263,7 @@ function renderChangelog() {
 
 screens.changelog = {
   key: e => {
-    const box = document.getElementById('cl-scroll');
+    const box = $('cl-scroll');
     const key = e.key.toLowerCase();
     if (key === 'arrowdown' || key === 's') box.scrollBy({ top: 60 });
     else if (key === 'arrowup' || key === 'w') box.scrollBy({ top: -60 });
@@ -1255,7 +1272,7 @@ screens.changelog = {
     else if (key === 'enter') {
       oldOpen = !oldOpen;
       renderChangelog();
-      document.getElementById('cl-toggle').scrollIntoView({ block: 'nearest' });
+      $('cl-toggle').scrollIntoView({ block: 'nearest' });
     } else if (key === 'escape') show('menu');
   },
 };
@@ -1847,8 +1864,9 @@ async function doSignup(v) {
   if (res.error) return formMsg(res.error, 'err');
   const full = await fbLoadProfile(res.uid);
   setAccount(res.uid, full || res.profile);
-  await pullSettings();
+  needsSetup = false;
   startLive();
+  await pullSettings();
   finishAuth('[system]: welcome, ' + res.profile.display + '! check your email to verify your address.');
 }
 
@@ -1882,7 +1900,7 @@ async function doSignin(v) {
 
   formMsg('signing in...', 'dim');
   const res = await fbSignIn(email, v.password);
-    if (res.error) {
+  if (res.error) {
     if (res.uid) { me.uid = res.uid; startLive(); }
     return formMsg(res.error, 'err');
   }
@@ -1893,6 +1911,7 @@ async function doSignin(v) {
     return openFinishSetup();
   }
   setAccount(res.uid, res.profile);
+  needsSetup = false;
   account.verified = await fbEmailVerified();
   await pullSettings();
   startLive();
@@ -2087,7 +2106,7 @@ function infoNode(p) {
     line.append(el('span', 'c', label + ' '), document.createTextNode(value));
     d.appendChild(line);
   };
-  row('Username:', p.username);
+  row('Login:', p.username);
   row('Name:', p.display);
   row('Joined:', p.created ? new Date(p.created).toISOString().slice(0, 10) : '—');
   const tags = String(p.badges).split(',').map(t => t.trim()).filter(Boolean);
@@ -2125,7 +2144,7 @@ function profileNode(raw) {
     box.append(row, strip);
   }
   box.appendChild(bioNode(p));
-  frameEl(box, p.username + "'s profile");
+  frameEl(box, 'finger ' + p.username);
   return box;
 }
 
@@ -2207,10 +2226,12 @@ function epRefresh() {
   ep.art.forEach(fn => fn());
 }
 
+const LAYOUT_LABELS = { 1: 'Banner on top', 2: 'Banner beside picture', 3: 'Banner as divider' };
+
 function openEditProfile() {
   const p = withDefaults(account.profile);
   ep.s = {
-    layout: p.layout, accent: p.accent, display: p.display, bio: p.bio, letter: p.letter,
+    layout: p.layout, accent: p.accent, display: p.display, bio: p.bio, letter: p.letter, username: '',
     pfpMode: p.pfpMode, pfpImg: p.pfpImg, bannerMode: p.bannerMode, bannerImg: p.bannerImg,
   };
   ep.rows = [];
@@ -2281,16 +2302,16 @@ function openEditProfile() {
 
   const layoutSec = section('Layout');
   const lrow = newRow(layoutSec);
-  [[1, 'Banner on top'], [2, 'Banner beside picture'], [3, 'Banner as divider']].forEach(([n, cap]) => {
+  [1, 2, 3].forEach(n => {
     const wf = el('div', 'wf l' + n);
     ['b', 'p', 't1', 't2'].forEach(k => wf.appendChild(el('i', k)));
     if (n === 3) wf.appendChild(el('i', 't3'));
-    tile(lrow, wf, cap, () => { ep.s.layout = n; epRefresh(); }, () => ep.s.layout === n);
+    tile(lrow, wf, LAYOUT_LABELS[n], () => { ep.s.layout = n; epRefresh(); }, () => ep.s.layout === n);
   });
 
   const details = section('Details');
   field(details, 'Display name', 'display', 20, { id: 'display' });
-    if (account.profile.usernameReset === true) {
+  if (account.profile.usernameReset === true) {
     const urow = newRow(details, 'frow');
     ep.idx.username = ep.rows.length - 1;
     const uwrap = el('div', 'fwrap');
@@ -2309,7 +2330,7 @@ function openEditProfile() {
     const lock = el('div', 'frow locked');
     lock.appendChild(el('label', 'flabel', 'Username'));
     lock.appendChild(el('div', 'finput dis', '@' + account.username));
-    lock.appendChild(el('span', 'fnote dim', "usernames are not changeable. to change your username, email me! contacttempterm@gmail.com"));
+    lock.appendChild(el('span', 'fnote dim', 'usernames are not changeable. to change your username, email me! contacttempterm@gmail.com'));
     details.appendChild(lock);
   }
   field(details, 'Bio', 'bio', 200, { area: true });
@@ -2706,6 +2727,8 @@ screens.crop = {
 };
 
 // ---------- notices and live profile ----------
+const noticeUi = { open: false, queue: [], cur: null, stopNotices: null, stopProfile: null };
+
 function showNextNotice() {
   if (noticeUi.open || !noticeUi.queue.length) return;
   const n = noticeUi.queue.shift();
@@ -2756,20 +2779,8 @@ function startLive() {
   noticeUi.stopProfile = null;
   if (!me.uid) return;
   const uid = me.uid;
-  
-  try {
-    noticeUi.stopNotices = fbWatchNotices(uid, (key, n) => onNotice(uid, key, n));
-  } catch (e) {
-    noticeUi.stopNotices = null;
-  }
-
-  if (account) {
-    try {
-      noticeUi.stopProfile = fbWatchProfile(uid, onProfileLive);
-    } catch (e) {
-      noticeUi.stopProfile = null;
-    }
-  }
+  noticeUi.stopNotices = fbWatchNotices(uid, (key, n) => onNotice(uid, key, n));
+  if (account) noticeUi.stopProfile = fbWatchProfile(uid, onProfileLive);
 }
 
 // ---------- tutorial ----------
@@ -2976,8 +2987,8 @@ devBtn.addEventListener('click', e => {
 applyTheme();
 applyUi();
 if (firstRun) {
-  document.getElementById('splash-title').textContent = 'Welcome to TempTerm!';
-  document.getElementById('splash-ver').hidden = true;
+  $('splash-title').textContent = 'Welcome to TempTerm!';
+  $('splash-ver').hidden = true;
 }
 render();
 boot();
