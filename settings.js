@@ -39,8 +39,40 @@ function load() {
 
 export const settings = load();
 
+let saveHook = null;
+
+export function setSaveHook(fn) {
+  saveHook = fn;
+}
+
 export function save() {
   localStorage.setItem('settings', JSON.stringify(settings));
+  if (saveHook) saveHook();
+}
+
+export function getSyncable() {
+  const custom = {};
+  settings.custom.forEach(t => { custom[t.id] = { name: t.name, colors: { ...t.colors } }; });
+  return { theme: settings.theme, size: settings.size, pfps: !!settings.pfps, ui: settings.ui, language: settings.language, custom };
+}
+
+export function applyRemote(r) {
+  if (!r || typeof r !== 'object') return false;
+  const custom = [];
+  if (r.custom && typeof r.custom === 'object') {
+    Object.keys(r.custom).forEach(id => {
+      const t = { id, name: r.custom[id] && r.custom[id].name, colors: r.custom[id] && r.custom[id].colors };
+      if (validTheme(t)) custom.push(t);
+    });
+  }
+  settings.custom = custom;
+  if (SIZES.includes(r.size)) settings.size = r.size;
+  if (typeof r.pfps === 'boolean') settings.pfps = r.pfps;
+  if (r.ui === 'modern' || r.ui === 'classic') settings.ui = r.ui;
+  if (typeof r.language === 'string' && r.language.length <= 20) settings.language = r.language;
+  if (typeof r.theme === 'string' && (THEMES[r.theme] || custom.some(t => 'custom:' + t.id === r.theme))) settings.theme = r.theme;
+  localStorage.setItem('settings', JSON.stringify(settings));
+  return true;
 }
 
 export function newThemeId() {

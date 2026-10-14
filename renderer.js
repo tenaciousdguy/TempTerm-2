@@ -1,12 +1,16 @@
 import {
-  watchConnection, fbInit, fbLoadProfile, fbSaveProfile, fbSendReport, fbWatchNotices, fbClearNotice, fbWatchProfile, fbChangeUsername, fbUsernameFree, fbSignUp, fbSignIn, fbSignOut, fbSendReset, fbGetUser,
+  watchConnection, fbInit, fbLoadProfile, fbSaveProfile, fbSendReport, fbLoadSettings, fbFinishProfile, fbSaveSettings, withTimeout, fbWatchNotices, fbClearNotice, fbWatchProfile, fbChangeUsername, fbUsernameFree, fbSignUp, fbSignIn, fbSignOut, fbSendReset, fbGetUser,
   fbEmailVerified, fbResendVerification,
   fbCreateRoom, fbJoinRoom, fbLeaveRoom, fbCleanup,
   fbSendMessage, fbWatchRoom, fbListRooms,
 } from './firebase.js';
 import { settings, save, THEMES, SIZES, applyTheme, applyColors, applyUi, applyPfps, applySize, getTheme, newThemeId } from './settings.js';
+import { createGrid, scrollInto } from './ui.js';
+import { setSaveHook, getSyncable, applyRemote } from './settings.js';
 
 const $ = id => document.getElementById(id);
+const msgInput = document.getElementById('msg');
+const noticeUi = { open: false, queue: [], cur: null, stopNotices: null, stopProfile: null };
 
 // ---------- state ----------
 function randomGuestName() {
@@ -19,6 +23,10 @@ let room = null;
 let busy = false;
 let current = 'splash';
 let splashReady = false;
+let online = false;
+let everOnline = false;
+let sessionOk = false;
+let needsSetup = false;
 const firstRun = localStorage.getItem('tutorialDone') !== '1';
 
 function el(tag, cls, text) {
@@ -67,6 +75,7 @@ function show(id) {
   clearInterval(search.timer);
   clearInterval(verifyTimer);
   current = id;
+    $('offline').hidden = online || id === 'splash';
   document.querySelectorAll('.screen').forEach(s => s.hidden = s.id !== id);
   if (id === 'menu') {
     if (!account) me.name = randomGuestName();
@@ -95,38 +104,68 @@ function setStatus(on) {
   status.classList.toggle('on', on);
 }
 
+function connChanged(on) {
+  const was = online;
+  online = on;
+  setStatus(on);
+  const bar = $('offline');
+  bar.textContent = room
+    ? '● connection lost. you will rejoin the room on your own when it is back.'
+    : '● connection lost. reconnecting...';
+  bar.hidden = on || current === 'splash';
+  if (on && !was && everOnline) onReconnected();
+  if (on) everOnline = true;
+}
+
 function waitForServer(timeout) {
   return new Promise(resolve => {
     let done = false;
     const timer = setTimeout(() => { if (!done) { done = true; resolve(false); } }, timeout);
     watchConnection(on => {
-      setStatus(on);
+      connChanged(on);
       if (on && !done) { done = true; clearTimeout(timer); resolve(true); }
     });
   });
+}
+
+async function initSession() {
+  const info = await fbInit();
+  me.uid = info.uid;
+  if (!info.anonymous) {
+    const profile = await fbLoadProfile(info.uid);
+    if (profile) { setAccount(info.uid, profile); account.verified = await fbEmailVerified(); }
+    else needsSetup = true;
+  }
+  startLive();
+  sessionOk = true;
+  const last = localStorage.getItem('lastRoom');
+  if (last) { await fbCleanup(last).catch(() => {}); localStorage.removeItem('lastRoom'); }
+}
+
+async function onReconnected() {
+  if (!sessionOk) {
+    try {
+      await withTimeout(initSession(), 12000);
+      if (account) await pullSettings();
+      if (current === 'menu') {
+        render();
+        say(needsSetup ? '[system]: connected. use the account box to finish setting up.' : '[system]: connected!');
+      }
+    } catch (e) { console.error(e); }
+  }
+  if (room) setTimeout(() => { if (room && online && !rj.busy) rejoinRoom(); }, 2500);
 }
 
 const steps = [
   { label: 'connecting to server', run: () => waitForServer(8000) },
   { label: 'signing in',
     run: async () => {
-      try {
-        const info = await fbInit();
-        me.uid = info.uid;
-        if (!info.anonymous) {
-          const profile = await fbLoadProfile(info.uid);
-          if (profile) { setAccount(info.uid, profile); account.verified = await fbEmailVerified(); }
-          else me.uid = await fbSignOut();
-        }
-        startLive();
-        const last = localStorage.getItem('lastRoom');
-        if (last) { await fbCleanup(last).catch(() => {}); localStorage.removeItem('lastRoom'); }
-        return true;
-      } catch (err) { console.error(err); return false; }
+      try { await withTimeout(initSession(), 12000); return true; }
+      catch (err) { console.error(err); return false; }
     },
     okText: () => account ? 'ok' : 'guest' },
   { label: 'loading themes', run: async () => { applyTheme(); applyUi(); return true; } },
-  { label: 'syncing settings', run: async () => { applySize(); return true; } },
+  { label: 'syncing settings', run: async () => { if (account) await pullSettings(); applySize(); return true; } },
 ];
 
 async function boot() {
@@ -146,6 +185,7 @@ async function boot() {
 function leaveSplash() {
   show('menu');
   if (firstRun) startTutorial();
+  else if (needsSetup) openFinishSetup();
 }
 
 screens.splash = {
@@ -170,10 +210,10 @@ function renderAccount() {
   box.classList.toggle('selected', selected === 0);
   box.textContent = '';
   const name = document.createElement('span');
-  name.textContent = account ? account.display + ' // ' + account.username : 'guest';
+  name.textContent = account ? account.display + ' // ' + account.username : needsSetup ? 'finish setting up your account' : 'guest';
   const btn = document.createElement('span');
   btn.className = 'dim';
-  btn.textContent = account ? '[log out]' : '[sign in]';
+  btn.textContent = account ? '[log out]' : needsSetup ? '[finish]' : '[sign in]';
   box.append(name, btn);
 }
 
@@ -215,17 +255,25 @@ function say(text) {
 function activate() {
   say('');
   if (selected === 0) {
-    if (account) logout(); else openSignin();
+    if (account) logout();
+    else if (needsSetup) openFinishSetup();
+    else openSignin();
     return;
   }
   const item = items[selected - 1];
   if (item.action === 'quit') return window.close();
-  if (item.needsAccount && !account) {
-    say('[system]: sign in to use profiles.');
+  if ((item.screen === 'search' || item.screen === 'create') && !online) {
+    say('[system]: no connection to the server yet. it will connect on its own...');
     return;
   }
-  if (document.getElementById(item.screen)) show(item.screen);
-  else say('[system]: ' + item.label + " isn't built yet.");
+  if (item.screen === 'search' || item.screen === 'create') {
+    if (!sessionOk) { say('[system]: still signing in. one moment...'); return; }
+  }
+  
+
+  if (item.screen) {
+    show(item.screen);
+  }
 }
 
 function move(step) {
@@ -291,10 +339,15 @@ function renderCreate() {
   }
 }
 
+let lastCreate = 0;
+
 async function startRoom() {
   if (busy) return;
-  busy = true;
   const hint = document.getElementById('cr-hint');
+  if (!online) { hint.textContent = '[system]: offline. waiting for the server...'; return; }
+  const left = 8000 - (Date.now() - lastCreate);
+  if (left > 0) { hint.textContent = '[system]: wait ' + Math.ceil(left / 1000) + ' seconds before making another room.'; return; }
+  busy = true;
   hint.textContent = '[system]: creating room...';
   try {
     const code = await fbCreateRoom({
@@ -302,13 +355,15 @@ async function startRoom() {
       limit: create.limit,
       hostName: me.name,
     });
+    lastCreate = Date.now();
     const err = await enterRoom(code, true);
     if (err) hint.textContent = '[system]: ' + err;
   } catch (e) {
     console.error(e);
-    hint.textContent = '[system]: could not create the room.';
+    hint.textContent = '[system]: ' + (e.code === 'timeout' ? 'the server is not answering. try again.' : 'could not create the room.');
+  } finally {
+    busy = false;
   }
-  busy = false;
 }
 
 function createMove(dir) {
@@ -413,8 +468,11 @@ function renderRooms() {
 }
 
 async function refreshRooms() {
+  if (!online) { setSearchMsg('[system]: offline. waiting for the server...'); return; }
   try {
     search.rooms = await fbListRooms();
+    const m = $('s-msg').textContent;
+    if (m.includes('offline') || m.includes('load rooms')) setSearchMsg('');
   } catch (e) {
     console.error(e);
     setSearchMsg('[system]: could not load rooms.');
@@ -509,6 +567,7 @@ let stopWatch = null;
 
 async function enterRoom(code, fresh = false, lid = null) {
   if (!me.uid) return 'not signed in. check your connection.';
+  if (!online) return 'offline. waiting for the server...';
   try {
     const res = await fbJoinRoom(code, me.name, { fresh, lid });
     if (res.error) return res.error;
@@ -518,69 +577,42 @@ async function enterRoom(code, fresh = false, lid = null) {
     return null;
   } catch (e) {
     console.error(e);
-    return 'could not join the room.';
+    return e.code === 'timeout' ? 'the server is not answering. try again.' : 'could not join the room.';
   }
 }
 
-async function leaveCurrentRoom() {
-  if (!room) return;
-  const { code, lid } = room;
-  const name = me.name;
+const rj = { busy: false, tries: [] };
+
+function closedWhileAway(text) {
   if (stopWatch) { stopWatch(); stopWatch = null; }
   room = null;
   localStorage.removeItem('lastRoom');
-  show('menu');
-  try { await fbLeaveRoom(code, name, lid); } catch (e) { console.error(e); }
-}
-
-function lineEl(text, cls) {
-  const p = document.createElement('p');
-  p.className = cls || '';
-  p.textContent = text;
-  return p;
-}
-
-function msgEl(name, text, uid) {
-  const p = document.createElement('p');
-  const who = el('span', 'who');
-  who.dataset.uid = uid || '';
-  who.dataset.name = name;
-  const pf = el('span', 'pfsq cpf');
-  who.append(pf, el('span', 'wname', name));
-  p.append(who, ': ' + text);
-  getUser(uid).then(u => fillPfp(pf, u));
-  return p;
-}
-
-function isAfter(a, b) {
-  const ta = Number(a.dataset.ts), tb = Number(b.dataset.ts);
-  return ta !== tb ? ta > tb : a.dataset.key > b.dataset.key;
-}
-
-function insertLine(node, key, ts) {
-  node.dataset.key = key;
-  node.dataset.ts = ts || 0;
-  const log = document.getElementById('log');
-  let prev = log.lastElementChild;
-  while (prev && isAfter(prev, node)) prev = prev.previousElementSibling;
-  log.insertBefore(node, prev ? prev.nextSibling : log.firstChild);
-  log.scrollTop = log.scrollHeight;
-}
-
-function addLocalLine(text) {
-  const log = document.getElementById('log');
-  log.appendChild(lineEl(text, 'dim'));
-  log.scrollTop = log.scrollHeight;
-}
-
-function enterChat() {
-  document.getElementById('log').innerHTML = '';
-  document.getElementById('msg').value = '';
-  document.getElementById('count').textContent = '';
-  userCache.clear();
   resetChatUi();
-  room.members = {};
+  show('menu');
+  say('[system]: ' + text);
+}
 
+async function rejoinRoom() {
+  if (rj.busy || !room || !me.uid) return;
+  const now = Date.now();
+  rj.tries = rj.tries.filter(t => now - t < 60000);
+  if (rj.tries.length >= 5) return;
+  rj.tries.push(now);
+  rj.busy = true;
+  const code = room.code;
+  try {
+    const res = await fbJoinRoom(code, me.name, { rejoin: true });
+    if (!room || room.code !== code) return;
+    if (res.error) return closedWhileAway(res.error === 'closed' ? 'the room closed while you were disconnected.' : res.error);
+    restartWatch();
+  } catch (e) {
+    console.error(e);
+  } finally {
+    rj.busy = false;
+  }
+}
+
+function startWatch() {
   stopWatch = fbWatchRoom(room.code, {
     onMessage: (key, m) => {
       const node = m.type === 'system' ? lineEl('[system]: ' + m.text, 'dim') : msgEl(m.name, m.text, m.uid);
@@ -591,18 +623,44 @@ function enterChat() {
       const n = Object.keys(members).length;
       document.getElementById('count').textContent =
         n + ' chatter' + (n === 1 ? '' : 's') + ' in room (limit ' + room.limit + ')  ·  Tab = see who is here';
+      if (online && me.uid && !members[me.uid] && !rj.busy) rejoinRoom();
+    },
+    onError: err => {
+      console.warn('room listener stopped:', err.code);
+      if (online) setTimeout(rejoinRoom, 500);
     },
   });
+}
 
+function restartWatch() {
+  if (stopWatch) { stopWatch(); stopWatch = null; }
+  document.getElementById('log').innerHTML = '';
+  startWatch();
+}
+
+function enterChat() {
+  document.getElementById('log').innerHTML = '';
+  document.getElementById('msg').value = '';
+  document.getElementById('count').textContent = '';
+  userCache.clear();
+  resetChatUi();
+  room.members = {};
+  rj.tries = [];
+  startWatch();
   document.getElementById('msg').focus();
 }
 
-const msgInput = document.getElementById('msg');
+const sendTimes = [];
 
 msgInput.addEventListener('keydown', e => {
   if (e.key !== 'Enter' || !room) return;
   const text = msgInput.value.trim();
   if (!text) return;
+  if (!online) return addLocalLine('[system]: you are offline. your message was not sent.');
+  const now = Date.now();
+  while (sendTimes.length && now - sendTimes[0] > 5000) sendTimes.shift();
+  if (sendTimes.length >= 6) return addLocalLine('[system]: slow down a little.');
+  sendTimes.push(now);
   msgInput.value = '';
   fbSendMessage(room.code, me.name, text).catch(err => {
     console.error(err);
@@ -625,11 +683,48 @@ screens.chat = {
     }
     if (e.key === 'Tab') { e.preventDefault(); openWho(); }
   },
-  wheel: dir => {
-    if (chatUi.rp) rpMove(dir);
-    else if (chatUi.who) moveWho(dir);
-  },
+    wheel: dir => { if (chatUi.who) moveWho(dir); },
 };
+
+// ---------- missing chat helpers & room management ----------
+
+async function leaveCurrentRoom() {
+  if (room) {
+    await fbLeaveRoom(room.code, me.uid).catch(() => {});
+    localStorage.removeItem('lastRoom');
+  }
+  if (stopWatch) { stopWatch(); stopWatch = null; }
+  room = null;
+  resetChatUi();
+  show('menu');
+}
+
+function lineEl(text, cls) {
+  const div = el('div', cls);
+  div.textContent = text;
+  return div;
+}
+
+function msgEl(name, text, uid) {
+  const div = el('div', 'msg-row');
+  const who = el('span', 'who', name);
+  if (uid) who.dataset.uid = uid;
+  who.dataset.name = name;
+  const content = el('span', '', ': ' + text);
+  div.append(who, content);
+  return div;
+}
+
+function insertLine(node) {
+  const log = document.getElementById('log');
+  log.appendChild(node);
+  log.scrollTop = log.scrollHeight;
+}
+
+function addLocalLine(text) {
+  const node = lineEl(text, 'dim');
+  insertLine(node);
+}
 
 // ---------- people in chat ----------
 const userCache = new Map();
@@ -814,9 +909,9 @@ function rpFocus(i) {
   rpt.cur = i;
   rpt.rows.forEach((r, n) => r.row.classList.toggle('on', n === i));
   const r = rpt.rows[i];
-  if (r.input) r.input.focus();
+  if (r.input) r.input.focus({ preventScroll: true });
   else if (document.activeElement && document.activeElement !== document.body) document.activeElement.blur();
-  r.row.scrollIntoView({ block: 'nearest' });
+  scrollInto($('rp'), r.row);
 }
 
 function rpMove(step) {
@@ -1170,175 +1265,254 @@ screens.credits = {
   key: e => { if (e.key === 'Escape') show('menu'); },
 };
 
+// ---------- settings sync ----------
+let syncTimer = null;
+
+function scheduleSync() {
+  if (!account) return;
+  clearTimeout(syncTimer);
+  syncTimer = setTimeout(() => { if (account) fbSaveSettings(account.uid, getSyncable()); }, 800);
+}
+
+async function pullSettings() {
+  if (!account) return;
+  try {
+    const remote = await fbLoadSettings(account.uid);
+    if (remote && applyRemote(remote)) {
+      applyTheme();
+      applyUi();
+      applySize();
+    } else {
+      await fbSaveSettings(account.uid, getSyncable());
+    }
+  } catch (e) {
+    console.error(e);
+  }
+}
+
+setSaveHook(scheduleSync);
+
 // ---------- settings ----------
-const set = { selectable: [], cur: 0, customOpen: false, flash: '', confirmDelete: null, pendingFocus: null };
-const SELECTABLE = ['radio', 'toggle', 'cycle', 'link', 'dropout'];
+const set = { pendingFocus: null, customOpen: false, armed: null, armBtn: null };
+const sg = createGrid($('set-scroll'));
+let setSels = [];
 
-function themeRows() {
-  const rows = [];
-  Object.keys(THEMES).forEach(name => rows.push({ type: 'radio', key: 'theme', value: name, text: name }));
-
-  const list = settings.custom;
-  const inline = list.length < 5;
-  if (!inline) {
-    rows.push({ type: 'dropout', text: (set.customOpen ? '[-]' : '[+]') + ' Custom Themes (' + list.length + ')' });
-  }
-  if (inline || set.customOpen) {
-    list.forEach(t => rows.push({
-      type: 'radio', key: 'theme', value: 'custom:' + t.id, text: t.name, custom: true, id: t.id, sub: !inline,
-    }));
-  }
-  rows.push({ type: 'link', value: 'new', text: '+ New Custom Theme' });
-  return rows;
+function setFlash(text) {
+  $('set-msg').textContent = text;
 }
 
-function settingsRows() {
-  const rows = [];
-  rows.push({ type: 'head', text: 'appearance' });
-  rows.push({ type: 'label', text: 'Theme' });
-  themeRows().forEach(r => rows.push(r));
-  rows.push({ type: 'head', text: 'window' });
-  rows.push({ type: 'label', text: 'Size (applies instantly)' });
-  SIZES.forEach(size => rows.push({ type: 'radio', key: 'size', value: size, text: size }));
-  rows.push({ type: 'head', text: 'toggles' });
-  rows.push({ type: 'toggle', key: 'pfps', text: 'PFPs in room', hint: '(small pictures next to names in chat)' });
-  rows.push({
-    type: 'cycle', key: 'ui', text: 'UI style',
-    options: ['modern', 'classic'], labels: { modern: '2.0', classic: '1.0' },
-    hint: '(1.0 hides chat pictures, more changes once 1.0 is merged in)',
+function disarmDelete() {
+  if (!set.armed) return;
+  if (set.armBtn) {
+    set.armBtn.textContent = 'Delete';
+    set.armBtn.classList.remove('arm');
+  }
+  set.armed = null;
+  set.armBtn = null;
+}
+
+sg.onChange = ctl => {
+  disarmDelete();
+  applyTheme(ctl && ctl.theme ? ctl.theme : settings.theme);
+  setFlash(ctl && ctl.hint ? ctl.hint : '');
+};
+
+function refreshSettings() {
+  setSels.forEach(fn => fn());
+}
+
+function swatchArt(c) {
+  const art = el('div', 'tswatch');
+  art.style.background = c.bg;
+  art.style.borderColor = c.dim;
+  const aa = el('b', '', 'Aa');
+  aa.style.color = c.text;
+  const bars = el('div', 'bars');
+  [c.bright, c.accent, c.dim].forEach(col => {
+    const i = el('i');
+    i.style.background = col;
+    bars.appendChild(i);
   });
-  rows.push({ type: 'head', text: 'language' });
-  rows.push({ type: 'radio', key: 'language', value: 'English', text: 'English' });
-  rows.push({ type: 'note', text: 'more languages come much later.' });
-  return rows;
+  art.append(aa, bars);
+  return art;
 }
 
-function selectableRows() {
-  return settingsRows().filter(r => SELECTABLE.includes(r.type));
+function sSec(parent, title) {
+  const sec = el('div', 'esec');
+  sec.appendChild(el('p', 'etitle', title));
+  parent.appendChild(sec);
+  return sec;
 }
 
-function rowText(r) {
-  if (r.type === 'radio') return '(' + (settings[r.key] === r.value ? '*' : ' ') + ') ' + r.text;
-  if (r.type === 'toggle') return r.text + ': ' + (settings[r.key] ? 'ON' : 'OFF');
-  if (r.type === 'cycle') return r.text + ': ' + r.labels[settings[r.key]];
-  return r.text;
+function sRow(sec, cls) {
+  const holder = el('div', cls || 'etiles');
+  sec.appendChild(holder);
+  return sg.row(holder);
 }
 
-function renderSettings() {
+function pickTheme(id) {
+  settings.theme = id;
+  save();
+  refreshSettings();
+  applyTheme(id);
+  setFlash('using this theme.');
+}
+
+function themeTile(row, id, name, colors) {
+  const tile = el('button', 'tile');
+  tile.append(swatchArt(colors), el('span', 'tcap', name));
+  sg.add(row, tile, { key: 'theme:' + id, theme: id, hint: 'Enter = use this theme', act: () => pickTheme(id) });
+  setSels.push(() => tile.classList.toggle('sel', settings.theme === id));
+}
+
+function deleteCustom(t, btn) {
+  if (set.armed !== t.id) {
+    set.armed = t.id;
+    set.armBtn = btn;
+    btn.textContent = 'Click again to delete';
+    btn.classList.add('arm');
+    return;
+  }
+  settings.custom = settings.custom.filter(x => x.id !== t.id);
+  if (settings.theme === 'custom:' + t.id) settings.theme = 'Default';
+  set.armed = null;
+  set.armBtn = null;
+  save();
+  buildSettings('new', true);
+  setFlash('deleted.');
+}
+
+function buildSettings(focusKey, keepScroll) {
+  const scroller = $('set-scroll');
+  const top = keepScroll ? scroller.scrollTop : 0;
   const body = $('set-body');
   body.innerHTML = '';
-  const rows = settingsRows();
-  set.selectable = rows.filter(r => SELECTABLE.includes(r.type));
-  set.cur = Math.max(0, Math.min(set.cur, set.selectable.length - 1));
-  const cursorRow = set.selectable[set.cur];
+  sg.reset();
+  setSels = [];
 
-  applyTheme(cursorRow && cursorRow.key === 'theme' ? cursorRow.value : settings.theme);
+  const themes = sSec(body, 'Theme');
+  const names = Object.keys(THEMES);
+  for (let i = 0; i < names.length; i += 3) {
+    const row = sRow(themes);
+    names.slice(i, i + 3).forEach(name => themeTile(row, name, name, THEMES[name]));
+  }
 
-  let cursorNode = null;
-  rows.forEach(r => {
-    const div = el('div', 'srow ' + r.type + (r.sub ? ' sub' : ''));
-    if (r.type === 'head') div.textContent = '— ' + r.text + ' —';
-    else if (r.type === 'label' || r.type === 'note') div.textContent = r.text;
-    else {
-      div.textContent = rowText(r);
-      if (r.hint) div.appendChild(el('span', 'dim small', '  ' + r.hint));
-      if (r.type === 'radio' && settings[r.key] === r.value) div.classList.add('active');
-      if (r === cursorRow) {
-        div.classList.add('on');
-        div.prepend(el('span', 'smark', '>'));
-        cursorNode = div;
-      }
+  const customs = settings.custom;
+  if (customs.length) {
+    const collapsed = customs.length >= 5;
+    if (collapsed) {
+      const row = sRow(themes, 'ebtn');
+      const b = el('button', 'fbtn', (set.customOpen ? '[-] ' : '[+] ') + 'Custom themes (' + customs.length + ')');
+      sg.add(row, b, {
+        key: 'dropout',
+        hint: 'Enter = show or hide your custom themes',
+        act: () => { set.customOpen = !set.customOpen; buildSettings('dropout', true); },
+      });
+    } else {
+      themes.appendChild(el('p', 'etitle', 'Yours'));
     }
-    body.appendChild(div);
+    if (!collapsed || set.customOpen) {
+      customs.forEach(t => {
+        const row = sRow(themes, 'crow');
+        themeTile(row, 'custom:' + t.id, t.name, t.colors);
+        const edit = el('button', 'chip', 'Edit');
+        sg.add(row, edit, {
+          key: 'edit:' + t.id, theme: 'custom:' + t.id, hint: 'Enter = edit this theme',
+          act: () => { openThemeEdit(t); show('themeedit'); },
+        });
+        const del = el('button', 'chip', 'Delete');
+        sg.add(row, del, {
+          key: 'del:' + t.id, theme: 'custom:' + t.id, hint: 'Enter twice = delete this theme',
+          act: () => deleteCustom(t, del),
+        });
+      });
+    }
+  }
+
+  const nrow = sRow(themes, 'ebtn');
+  sg.add(nrow, el('button', 'fbtn', '+ New custom theme'), {
+    key: 'new', hint: 'Enter = make your own theme',
+    act: () => { openThemeEdit(null); show('themeedit'); },
   });
 
-  let msg = set.flash;
-  if (!msg && cursorRow && cursorRow.key === 'theme') {
-    msg = cursorRow.custom ? 'Enter = use | E = edit | Delete = remove' : 'Enter = use this theme';
-  }
-  $('set-msg').textContent = msg;
+  const win = sSec(body, 'Window size');
+  const wrow = sRow(win, 'chips');
+  SIZES.forEach(size => {
+    const chip = el('button', 'chip', size);
+    sg.add(wrow, chip, {
+      key: 'size:' + size, hint: 'resizes the window right away',
+      act: () => { settings.size = size; save(); applySize(); refreshSettings(); },
+    });
+    setSels.push(() => chip.classList.toggle('sel', settings.size === size));
+  });
 
-  if (set.cur === 0) $('set-scroll').scrollTop = 0;
-  else if (cursorNode) cursorNode.scrollIntoView({ block: 'nearest' });
+  const chat = sSec(body, 'Chat');
+  const prow = sRow(chat, 'ewide');
+  const pBtn = el('button', 'swrow');
+  const pPill = el('span', 'pill');
+  pBtn.append(el('span', '', 'Show PFPs in chat'), pPill);
+  sg.add(prow, pBtn, {
+    key: 'pfps', hint: 'small pictures next to names',
+    act: () => { settings.pfps = !settings.pfps; applyPfps(); save(); refreshSettings(); },
+  });
+  setSels.push(() => {
+    pPill.textContent = settings.pfps ? 'ON' : 'OFF';
+    pPill.classList.toggle('yes', !!settings.pfps);
+  });
+
+  const ui = sSec(body, 'UI style');
+  const urow = sRow(ui, 'chips');
+  [['modern', '2.0 (new)'], ['classic', '1.0 (classic)']].forEach(([val, text]) => {
+    const chip = el('button', 'chip', text);
+    sg.add(urow, chip, {
+      key: 'ui:' + val, hint: '1.0 hides chat pictures. more changes once 1.0 is merged in.',
+      act: () => { settings.ui = val; applyUi(); save(); refreshSettings(); },
+    });
+    setSels.push(() => chip.classList.toggle('sel', settings.ui === val));
+  });
+
+  const lang = sSec(body, 'Language');
+  const lrow = sRow(lang, 'chips');
+  const eng = el('button', 'chip', 'English');
+  sg.add(lrow, eng, {
+    key: 'lang:English', hint: 'more languages come much later',
+    act: () => { settings.language = 'English'; save(); refreshSettings(); },
+  });
+  setSels.push(() => eng.classList.toggle('sel', settings.language === 'English'));
+
+  const acc = sSec(body, 'Account');
+  acc.appendChild(el('p', 'snote dim', account
+    ? 'Your settings are saved to your account and follow you to any PC.'
+    : 'You are a guest, so settings are only saved on this PC.'));
+  if (!account) {
+    const arow = sRow(acc, 'ebtn');
+    sg.add(arow, el('button', 'fbtn', 'Sign in to sync settings'), {
+      key: 'signin', hint: 'opens the sign-in screen',
+      act: () => { applyTheme(); openSignin(); },
+    });
+  }
+
+  refreshSettings();
+  scroller.scrollTop = top;
+  if (!(focusKey && sg.focusKey(focusKey, !keepScroll))) sg.focus(0, 0, false);
 }
 
 function openSettings() {
-  set.flash = '';
-  set.confirmDelete = null;
-  const focus = set.pendingFocus || settings.theme;
+  const pend = set.pendingFocus;
   set.pendingFocus = null;
-  if (focus.startsWith('custom:') && settings.custom.length >= 5) set.customOpen = true;
-  const idx = selectableRows().findIndex(r => r.value === focus);
-  set.cur = idx >= 0 ? idx : 0;
-  renderSettings();
-}
-
-function moveSetting(step) {
-  set.flash = '';
-  set.confirmDelete = null;
-  set.cur = (set.cur + step + set.selectable.length) % set.selectable.length;
-  renderSettings();
-}
-
-function activateSetting() {
-  const r = set.selectable[set.cur];
-  set.flash = '';
-  set.confirmDelete = null;
-  if (r.type === 'radio') {
-    settings[r.key] = r.value;
-    if (r.key === 'size') applySize();
-  } else if (r.type === 'toggle') {
-    settings[r.key] = !settings[r.key];
-    if (r.key === 'pfps') applyPfps();
-  } else if (r.type === 'cycle') {
-    const i = r.options.indexOf(settings[r.key]);
-    settings[r.key] = r.options[(i + 1) % r.options.length];
-    if (r.key === 'ui') applyUi();
-  } else if (r.type === 'dropout') {
-    set.customOpen = !set.customOpen;
-  } else if (r.type === 'link') {
-    openThemeEdit(null);
-    show('themeedit');
-    return;
-  }
-  save();
-  renderSettings();
-}
-
-function editSetting() {
-  const r = set.selectable[set.cur];
-  if (!r || !r.custom) return;
-  openThemeEdit(settings.custom.find(t => t.id === r.id));
-  show('themeedit');
-}
-
-function deleteSetting() {
-  const r = set.selectable[set.cur];
-  if (!r || !r.custom) return;
-  if (set.confirmDelete !== r.id) {
-    set.confirmDelete = r.id;
-    set.flash = 'press Delete again to remove "' + r.text + '".';
-    return renderSettings();
-  }
-  settings.custom = settings.custom.filter(t => t.id !== r.id);
-  if (settings.theme === 'custom:' + r.id) settings.theme = 'Default';
-  set.confirmDelete = null;
-  set.flash = 'deleted.';
-  save();
-  renderSettings();
+  let key = 'theme:' + settings.theme;
+  if (pend === 'new') key = 'new';
+  else if (pend && pend.startsWith('custom:')) key = 'theme:' + pend;
+  const wanted = pend && pend.startsWith('custom:') ? pend : settings.theme;
+  if (wanted.startsWith('custom:') && settings.custom.length >= 5) set.customOpen = true;
+  buildSettings(key, false);
 }
 
 screens.settings = {
   key: e => {
-    const key = e.key.toLowerCase();
-    if (key === 'arrowdown' || key === 's') moveSetting(1);
-    else if (key === 'arrowup' || key === 'w') moveSetting(-1);
-    else if (key === 'enter') activateSetting();
-    else if (key === 'e') editSetting();
-    else if (key === 'delete' || key === 'x' || key === 'backspace') deleteSetting();
-    else if (key === 'escape') { applyTheme(); show('menu'); }
+    if (sg.key(e)) return;
+    if (e.key === 'Escape') { applyTheme(); show('menu'); }
   },
-  wheel: dir => moveSetting(dir),
 };
 
 // ---------- theme editor ----------
@@ -1526,9 +1700,9 @@ function formMark(i) {
 function formFocus(i) {
   formMark(i);
   const r = form.rows[i];
-  if (r.input) r.input.focus();
+  if (r.input) r.input.focus({ preventScroll: true });
   else if (document.activeElement && document.activeElement !== document.body) document.activeElement.blur();
-  r.row.scrollIntoView({ block: 'nearest' });
+  scrollInto($('f-scroll'), r.row);
 }
 
 function formMove(step) {
@@ -1609,7 +1783,6 @@ screens.form = {
     else if (key === 'enter') { e.preventDefault(); formEnter(); }
     else if (key === 'escape') form.cfg.back();
   },
-  wheel: dir => formMove(dir),
 };
 
 $('f-corner').addEventListener('click', () => openSignin());
@@ -1674,6 +1847,7 @@ async function doSignup(v) {
   if (res.error) return formMsg(res.error, 'err');
   const full = await fbLoadProfile(res.uid);
   setAccount(res.uid, full || res.profile);
+  await pullSettings();
   startLive();
   finishAuth('[system]: welcome, ' + res.profile.display + '! check your email to verify your address.');
 }
@@ -1713,12 +1887,14 @@ async function doSignin(v) {
     return formMsg(res.error, 'err');
   }
   if (!res.profile) {
-    me.uid = await fbSignOut();
+    me.uid = res.uid;
+    needsSetup = true;
     startLive();
-    return formMsg('this account has no profile yet. contact the developer.', 'err');
+    return openFinishSetup();
   }
   setAccount(res.uid, res.profile);
   account.verified = await fbEmailVerified();
+  await pullSettings();
   startLive();
   finishAuth('[system]: signed in as ' + res.profile.display + '.');
 }
@@ -1743,6 +1919,42 @@ function openForgot() {
       formMsg('if that email has an account, a reset link is on its way. check spam too.', 'ok');
     },
   });
+}
+
+function openFinishSetup() {
+  openForm({
+    title: 'Finish setting up your account',
+    corner: false,
+    intro: 'your sign-up did not finish saving. pick your username and display name to continue.',
+    back: () => show('menu'),
+    fields: [
+      { key: 'username', label: 'Username', type: 'text', max: 16, onInput: checkUsername },
+      { key: 'display', label: 'Display name', type: 'text', max: 20 },
+    ],
+    buttons: [
+      { label: 'Finish setup', action: formSubmit },
+      { label: 'Sign out', action: async () => { me.uid = await fbSignOut(); needsSetup = false; startLive(); show('menu'); } },
+    ],
+    submit: doFinish,
+  });
+}
+
+async function doFinish(v) {
+  const username = v.username.trim();
+  const display = v.display.trim() || username;
+  const fail = (text, row) => { formMsg(text, 'err'); formFocus(row); };
+  if (!USERNAME_RE.test(username)) return fail('username: 3-16 letters, numbers or _', 0);
+  if (RESERVED_RE.test(username)) return fail('that username is reserved.', 0);
+  if (display.length > 20) return fail('display name: 20 characters max.', 1);
+  formMsg('saving...', 'dim');
+  const res = await fbFinishProfile({ username, display });
+  if (res.error) return formMsg(res.error, 'err');
+  const full = await fbLoadProfile(res.uid);
+  setAccount(res.uid, full || res.profile);
+  needsSetup = false;
+  startLive();
+  await pullSettings();
+  finishAuth('[system]: all set, ' + res.profile.display + '! your account is ready.');
 }
 
 // ---------- email verification ----------
@@ -1966,9 +2178,9 @@ function epSet(r, c) {
 function epFocus(r, c) {
   epSet(r, c);
   const ctl = ep.rows[r].items[c];
-  if (ctl.input) ctl.input.focus();
+  if (ctl.input) ctl.input.focus({ preventScroll: true });
   else if (document.activeElement && document.activeElement !== document.body) document.activeElement.blur();
-  ctl.el.scrollIntoView({ block: 'nearest' });
+  scrollInto($('ep-scroll'), ctl.el);
 }
 
 function epLinear(step) {
@@ -2288,7 +2500,6 @@ screens.editprofile = {
     }
     else if (key === 'escape') show('profile');
   },
-  wheel: dir => epRow(dir),
 };
 
 // ---------- image picking and cropping ----------
@@ -2327,9 +2538,10 @@ async function epUpload(kind) {
       else { ep.s.bannerImg = url; ep.s.bannerMode = 'image'; }
       epRefresh();
       show('editprofile');
+      epFocus(ep.r, ep.c);
       epMsg((kind === 'pfp' ? 'picture' : 'banner') + ' ready. press Save to keep it.', 'ok');
     },
-    () => { show('editprofile'); epMsg('', 'dim'); });
+    () => { show('editprofile'); epFocus(ep.r, ep.c); epMsg('', 'dim'); });
 }
 
 const CROP = {
@@ -2494,8 +2706,6 @@ screens.crop = {
 };
 
 // ---------- notices and live profile ----------
-const noticeUi = { open: false, queue: [], cur: null, stopNotices: null, stopProfile: null };
-
 function showNextNotice() {
   if (noticeUi.open || !noticeUi.queue.length) return;
   const n = noticeUi.queue.shift();
@@ -2546,8 +2756,20 @@ function startLive() {
   noticeUi.stopProfile = null;
   if (!me.uid) return;
   const uid = me.uid;
-  noticeUi.stopNotices = fbWatchNotices(uid, (key, n) => onNotice(uid, key, n));
-  if (account) noticeUi.stopProfile = fbWatchProfile(uid, onProfileLive);
+  
+  try {
+    noticeUi.stopNotices = fbWatchNotices(uid, (key, n) => onNotice(uid, key, n));
+  } catch (e) {
+    noticeUi.stopNotices = null;
+  }
+
+  if (account) {
+    try {
+      noticeUi.stopProfile = fbWatchProfile(uid, onProfileLive);
+    } catch (e) {
+      noticeUi.stopProfile = null;
+    }
+  }
 }
 
 // ---------- tutorial ----------
@@ -2693,7 +2915,7 @@ function endTutorial() {
   setTimeout(() => { if (!tut.active) $('tut').hidden = true; }, 450);
   selected = 1;
   render();
-  openSignup();
+  if (needsSetup) openFinishSetup(); else openSignup();
 }
 
 function tutNope() {

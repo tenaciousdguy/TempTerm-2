@@ -6,7 +6,7 @@ import {
 } from 'https://www.gstatic.com/firebasejs/12.14.0/firebase-auth.js';
 import {
   getDatabase, ref, onValue, get, set, push, remove, update,
-  onChildAdded, onDisconnect, serverTimestamp,
+  onChildAdded, onDisconnect, serverTimestamp, goOffline, goOnline,
 } from 'https://www.gstatic.com/firebasejs/12.14.0/firebase-database.js';
 
 const app = initializeApp({
@@ -59,6 +59,21 @@ export async function fbGetUser(uid) {
   const snap = await get(ref(db, `users/${uid}`));
   if (!snap.exists()) return null;
   return snap.val();
+}
+
+export async function fbLoadSettings(uid) {
+  const snap = await get(ref(db, `users/${uid}/settings`));
+  return snap.exists() ? snap.val() : null;
+}
+
+export async function fbSaveSettings(uid, data) {
+  try {
+    await set(ref(db, `users/${uid}/settings`), data);
+    return {};
+  } catch (err) {
+    console.error('settings sync failed:', err);
+    return { error: true };
+  }
 }
 
 export function fbWatchNotices(uid, cb) {
@@ -124,7 +139,7 @@ export async function fbLoadProfile(uid) {
 
 export async function fbSaveProfile(uid, fields) {
   try {
-    await update(ref(db, `users/${uid}`), fields);
+  await withTimeout(update(ref(db, `users/${uid}`), fields));
     return {};
   } catch (err) {
     console.error(err);
@@ -141,9 +156,9 @@ export async function fbSignUp({ username, display, email, password }) {
   const user = auth.currentUser;
   const lower = username.toLowerCase();
   try {
-    await set(ref(db, `usernames/${lower}`), user.uid);
-  } catch {
-    return { error: 'that username is taken or not allowed.' };
+    await withTimeout(set(ref(db, `usernames/${lower}`), user.uid));
+  } catch (err) {
+    return { error: err.code === 'timeout' ? 'the server is not answering. try again.' : 'that username is taken or not allowed.' };
   }
   try {
     await linkWithCredential(user, EmailAuthProvider.credential(email, password));
@@ -152,7 +167,7 @@ export async function fbSignUp({ username, display, email, password }) {
     return { error: authError(err) };
   }
   try {
-    await set(ref(db, `users/${user.uid}`), { username, display, created: serverTimestamp() });
+  await withTimeout(set(ref(db, `users/${user.uid}`), { username, display, created: serverTimestamp() }));
   } catch (err) {
     console.error(err);
     return { error: 'account created, but the profile could not be saved. try signing in.' };
@@ -187,6 +202,25 @@ export async function fbSignOut() {
   return auth.currentUser.uid;
 }
 
+export async function fbFinishProfile({ username, display }) {
+  const uid = auth.currentUser.uid;
+  const lower = username.toLowerCase();
+  try {
+    const claim = await withTimeout(get(ref(db, `usernames/${lower}`)));
+    if (!claim.exists()) await withTimeout(set(ref(db, `usernames/${lower}`), uid));
+    else if (claim.val() !== uid) return { error: 'that username is taken.' };
+  } catch (err) {
+    return { error: err.code === 'timeout' ? 'the server is not answering. try again.' : 'that username is taken or not allowed.' };
+  }
+  try {
+    await withTimeout(set(ref(db, `users/${uid}`), { username, display, created: serverTimestamp() }));
+  } catch (err) {
+    console.error(err);
+    return { error: 'could not save the profile. try again.' };
+  }
+  return { uid, profile: { username, display } };
+}
+
 export async function fbSendReset(email) {
   try {
     await sendPasswordResetEmail(auth, email);
@@ -213,14 +247,6 @@ export async function fbResendVerification() {
 }
 
 // ---------- rooms ----------
-// Data layout:
-//   rooms/CODE/meta            type, limit, host, lid
-//   rooms/CODE/members/UID     who is in the room right now
-//   rooms/CODE/messages/ID     the chat, including system lines (type: 'system')
-//   lobby/LID                  what the Room Searcher lists (public entries include the code)
-//   lobbyMembers/LID/UID       mirrors the member list, so the searcher can show counts
-//   lobbyCodes/LID             the real room code; only readable once the room is empty (for cleanup)
-
 const CODE_CHARS = 'ABCDEFGHJKLMNPQRSTUVWXYZ23456789';
 
 function makeCode() {
@@ -229,13 +255,25 @@ function makeCode() {
   return code;
 }
 
-function pushSystem(code, name, text) {
-  return push(ref(db, `rooms/${code}/messages`), {
-    uid: auth.currentUser.uid, name, type: 'system', text, ts: serverTimestamp(),
-  }).catch(err => console.error('system message failed:', err));
+function pad(n) {
+  return n < 10 ? '0' + n : String(n);
 }
 
-export async function fbCreateRoom({ type, limit, hostName }) {
+export function withTimeout(promise, ms = 12000) {
+  let timer;
+  const timeout = new Promise((_, reject) => {
+    timer = setTimeout(() => reject(Object.assign(new Error('timeout'), { code: 'timeout' })), ms);
+  });
+  return Promise.race([promise, timeout]).finally(() => clearTimeout(timer));
+}
+
+function pushSystem(code, name, text) {
+  return withTimeout(push(ref(db, `rooms/${code}/messages`), {
+    uid: auth.currentUser.uid, name, type: 'system', text, ts: serverTimestamp(),
+  }), 8000).catch(err => console.error('system message failed:', err));
+}
+
+async function createInner({ type, limit, hostName }) {
   const uid = auth.currentUser.uid;
   for (let i = 0; i < 5; i++) {
     const code = makeCode();
@@ -247,7 +285,7 @@ export async function fbCreateRoom({ type, limit, hostName }) {
       type, limit, host: uid, hostName, created: serverTimestamp(), lid,
     });
     const entry = { type, host: uid, hostName, limit, created: serverTimestamp() };
-    if (type === 'public') entry.code = code; // private codes are never shown
+    if (type === 'public') entry.code = code;
     await set(ref(db, `lobby/${lid}`), entry);
     await set(ref(db, `lobbyCodes/${lid}`), code);
     return code;
@@ -255,54 +293,85 @@ export async function fbCreateRoom({ type, limit, hostName }) {
   throw new Error('could not find a free room code');
 }
 
-// opts.fresh = true only for the person who just created the room
-// opts.lid   = set when joining a private room from the list
-export async function fbJoinRoom(code, name, opts = {}) {
+export function fbCreateRoom(opts) {
+  return withTimeout(createInner(opts), 15000);
+}
+
+async function joinInner(code, name, opts) {
   const uid = auth.currentUser.uid;
+  const closed = opts.rejoin ? 'closed' : 'room not found.';
+
   const metaSnap = await get(ref(db, `rooms/${code}/meta`));
-  if (!metaSnap.exists()) return { error: opts.lid ? 'wrong code.' : 'room not found.' };
+  if (!metaSnap.exists()) return { error: opts.lid ? 'wrong code.' : closed };
   const meta = metaSnap.val();
   if (opts.lid && meta.lid !== opts.lid) return { error: 'wrong code.' };
 
-  const memSnap = await get(ref(db, `rooms/${code}/members`));
+  const [memSnap, slotSnap] = await Promise.all([
+    get(ref(db, `rooms/${code}/members`)),
+    get(ref(db, `rooms/${code}/slots`)),
+  ]);
   const members = memSnap.val() || {};
+  const slots = slotSnap.val() || {};
   const count = Object.keys(members).length;
 
-  // An empty room that nobody just created is a closed room.
   if (count === 0 && !opts.fresh) {
     await fbCleanup(code).catch(() => {});
-    return { error: 'room not found.' };
+    return { error: closed };
   }
   if (!members[uid] && count >= meta.limit) return { error: 'room is full.' };
   if (count === 0) await remove(ref(db, `rooms/${code}/messages`));
 
-  await set(ref(db, `rooms/${code}/members/${uid}`), { name, joined: serverTimestamp() });
+  let slot = Object.keys(slots).find(k => slots[k] === uid);
+  for (let i = 1; !slot && i <= meta.limit; i++) {
+    const key = pad(i);
+    if (slots[key]) continue;
+    try {
+      await set(ref(db, `rooms/${code}/slots/${key}`), uid);
+      slot = key;
+    } catch {
+      // someone took that seat at the same moment, try the next one
+    }
+  }
+  if (!slot) return { error: 'room is full.' };
+
+  try {
+    await set(ref(db, `rooms/${code}/members/${uid}`), { name, joined: serverTimestamp(), slot });
+  } catch (err) {
+    await remove(ref(db, `rooms/${code}/slots/${slot}`)).catch(() => {});
+    throw err;
+  }
   if (meta.lid) await set(ref(db, `lobbyMembers/${meta.lid}/${uid}`), true);
 
-  // If the app closes or the connection drops:
-  // posts the "has left" line and removes us from the member lists.
   const leaveKey = push(ref(db, `rooms/${code}/messages`)).key;
   const updates = {
     [`rooms/${code}/members/${uid}`]: null,
+    [`rooms/${code}/slots/${slot}`]: null,
     [`rooms/${code}/messages/${leaveKey}`]: {
       uid, name, type: 'system', text: `${name} has left the room.`, ts: serverTimestamp(),
     },
   };
   if (meta.lid) updates[`lobbyMembers/${meta.lid}/${uid}`] = null;
+  await onDisconnect(ref(db)).cancel();
   await onDisconnect(ref(db)).update(updates);
 
   if (opts.fresh) pushSystem(code, name, `room created! code: ${code} [${meta.type}]`);
-  pushSystem(code, name, `${name} has joined the room.`);
-  return { meta };
+  pushSystem(code, name, opts.rejoin ? `${name} has rejoined the room.` : `${name} has joined the room.`);
+  return { meta, slot };
 }
 
-// Deletes everything about a room, but only if nobody is in it (the rules enforce this too).
+// opts.fresh: you just created the room. opts.lid: joining a private room from the list.
+// opts.rejoin: coming back after a dropped connection.
+export function fbJoinRoom(code, name, opts = {}) {
+  return withTimeout(joinInner(code, name, opts), 15000);
+}
+
 export async function fbCleanup(code) {
   const members = await get(ref(db, `rooms/${code}/members`));
   if (members.exists()) return;
   const metaSnap = await get(ref(db, `rooms/${code}/meta`));
   const meta = metaSnap.val();
   await remove(ref(db, `rooms/${code}/messages`));
+  await remove(ref(db, `rooms/${code}/slots`)).catch(() => {});
   if (meta && meta.lid) {
     await remove(ref(db, `lobby/${meta.lid}`));
     await remove(ref(db, `lobbyCodes/${meta.lid}`));
@@ -310,7 +379,6 @@ export async function fbCleanup(code) {
   await remove(ref(db, `rooms/${code}/meta`));
 }
 
-// Closes an empty room found in the lobby using the code that becomes readable once its empty
 async function fbCloseLobby(lid) {
   const codeSnap = await get(ref(db, `lobbyCodes/${lid}`));
   if (codeSnap.exists()) return fbCleanup(codeSnap.val());
@@ -320,30 +388,32 @@ async function fbCloseLobby(lid) {
 export async function fbLeaveRoom(code, name, lid) {
   const uid = auth.currentUser.uid;
   await onDisconnect(ref(db)).cancel();
+  const mine = await withTimeout(get(ref(db, `rooms/${code}/members/${uid}`)), 6000).catch(() => null);
+  const slot = mine && mine.exists() ? mine.val().slot : null;
   pushSystem(code, name, `${name} has left the room.`);
   await remove(ref(db, `rooms/${code}/members/${uid}`));
+  if (slot) await remove(ref(db, `rooms/${code}/slots/${slot}`)).catch(() => {});
   if (lid) await remove(ref(db, `lobbyMembers/${lid}/${uid}`));
-  await fbCleanup(code); // the last person out deletes everything
+  await fbCleanup(code);
 }
 
 export function fbSendMessage(code, name, text) {
-  return push(ref(db, `rooms/${code}/messages`), {
+  return withTimeout(push(ref(db, `rooms/${code}/messages`), {
     uid: auth.currentUser.uid, name, text, ts: serverTimestamp(),
-  });
+  }), 10000);
 }
 
-// Live updates for one room. Returns a function that stops listening.
 export function fbWatchRoom(code, handlers) {
+  const fail = err => { if (handlers.onError) handlers.onError(err); };
   const stops = [
-    onChildAdded(ref(db, `rooms/${code}/messages`), snap => handlers.onMessage(snap.key, snap.val())),
-    onValue(ref(db, `rooms/${code}/members`), snap => handlers.onMembers(snap.val() || {})),
+    onChildAdded(ref(db, `rooms/${code}/messages`), snap => handlers.onMessage(snap.key, snap.val()), fail),
+    onValue(ref(db, `rooms/${code}/members`), snap => handlers.onMembers(snap.val() || {}), fail),
   ];
   return () => stops.forEach(stop => stop());
 }
 
-// Rooms with at least one person in them.
 export async function fbListRooms() {
-  const [lobbySnap, memSnap] = await Promise.all([get(ref(db, 'lobby')), get(ref(db, 'lobbyMembers'))]);
+  const [lobbySnap, memSnap] = await withTimeout(Promise.all([get(ref(db, 'lobby')), get(ref(db, 'lobbyMembers'))]));
   const mem = memSnap.val() || {};
   const rooms = [];
   lobbySnap.forEach(child => {
@@ -356,3 +426,6 @@ export async function fbListRooms() {
     .forEach(r => fbCloseLobby(r.lid).catch(() => {}));
   return rooms.filter(r => r.count > 0);
 }
+
+// Test helper: run __tt.offline() and __tt.online() in the dev console to simulate a dropped connection.
+window.__tt = { offline: () => goOffline(db), online: () => goOnline(db) };
