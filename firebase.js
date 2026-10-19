@@ -2,7 +2,7 @@ import { initializeApp } from 'https://www.gstatic.com/firebasejs/12.14.0/fireba
 import {
   getAuth, signInAnonymously, signInWithEmailAndPassword, signOut,
   EmailAuthProvider, linkWithCredential, sendPasswordResetEmail, sendEmailVerification, reload,
-  deleteUser,
+  deleteUser, reauthenticateWithCredential, updatePassword, verifyBeforeUpdateEmail,
 } from 'https://www.gstatic.com/firebasejs/12.14.0/firebase-auth.js';
 import {
   getDatabase, ref, onValue, get, set, push, remove, update,
@@ -35,6 +35,8 @@ function authError(err) {
   console.error(err);
   const map = {
     'auth/email-already-in-use': 'that email already has an account. try signing in.',
+    'auth/requires-recent-login': 'please sign in again, then try once more.',
+    'auth/missing-password': 'enter your password.',
     'auth/credential-already-in-use': 'that email already has an account. try signing in.',
     'auth/invalid-email': 'that email address does not look right.',
     'auth/weak-password': 'password is too weak. use at least 8 characters.',
@@ -243,6 +245,68 @@ export async function fbResendVerification() {
     return {};
   } catch (err) {
     return { error: authError(err) };
+  }
+}
+
+async function reauth(password) {
+  const user = auth.currentUser;
+  try {
+    await reauthenticateWithCredential(user, EmailAuthProvider.credential(user.email, password));
+    return {};
+  } catch (err) {
+    console.error(err);
+    if (/invalid-credential|wrong-password/.test(err.code || '')) return { error: 'that is not your current password.' };
+    return { error: authError(err) };
+  }
+}
+
+export async function fbChangePassword(current, next) {
+  const r = await reauth(current);
+  if (r.error) return r;
+  try {
+    await updatePassword(auth.currentUser, next);
+    return {};
+  } catch (err) {
+    return { error: authError(err) };
+  }
+}
+
+export async function fbChangeEmail(current, newEmail) {
+  const r = await reauth(current);
+  if (r.error) return r;
+  try {
+    await verifyBeforeUpdateEmail(auth.currentUser, newEmail);
+    return {};
+  } catch (err) {
+    return { error: authError(err) };
+  }
+}
+
+export async function fbDeleteAccount(password, username) {
+  const r = await reauth(password);
+  if (r.error) return r;
+  const user = auth.currentUser;
+  const uid = user.uid;
+  const lower = username.toLowerCase();
+  try {
+    await withTimeout(remove(ref(db, `users/${uid}`)));
+    const claim = await withTimeout(get(ref(db, `usernames/${lower}`)));
+    if (claim.exists() && claim.val() === uid) await withTimeout(remove(ref(db, `usernames/${lower}`)));
+  } catch (err) {
+    console.error(err);
+    return { error: 'could not remove your data. try again.' };
+  }
+  try {
+    await deleteUser(user);
+  } catch (err) {
+    console.error(err);
+    return { error: 'your profile was removed, but the login could not be deleted. sign in again to finish, or email contacttempterm@gmail.com.' };
+  }
+  try {
+    const cred = await signInAnonymously(auth);
+    return { uid: cred.user.uid };
+  } catch {
+    return { uid: null };
   }
 }
 

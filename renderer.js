@@ -1,10 +1,10 @@
 import {
-  watchConnection, fbInit, fbLoadProfile, fbSaveProfile, fbUsernameFree, fbSignUp, fbSignIn, fbSignOut, fbSendReset,
-  fbEmailVerified, fbResendVerification, fbGetUser, fbSendReport,
-  fbWatchNotices, fbClearNotice, fbWatchProfile, fbChangeUsername,
-  fbLoadSettings, fbSaveSettings, fbFinishProfile, withTimeout,
-  fbCreateRoom, fbJoinRoom, fbLeaveRoom, fbCleanup,
-  fbSendMessage, fbWatchRoom, fbListRooms,
+  watchConnection, fbInit, fbLoadProfile, fbSaveProfile, fbUsernameFree, fbSignUp, fbSignIn, fbSignOut,
+  fbSendReset, fbEmailVerified, fbResendVerification, fbGetUser, fbSendReport,
+  fbWatchNotices, fbClearNotice, fbWatchProfile, fbChangeUsername, fbLoadSettings,
+  fbSaveSettings, fbFinishProfile, withTimeout,
+  fbCreateRoom, fbJoinRoom, fbLeaveRoom, fbCleanup, fbSendMessage, fbWatchRoom, fbListRooms,
+  fbChangePassword, fbChangeEmail, fbDeleteAccount
 } from './firebase.js';
 import {
   settings, save, THEMES, SIZES, applyTheme, applyColors, applyUi, applyPfps, applySize,
@@ -1507,6 +1507,22 @@ function buildSettings(focusKey, keepScroll) {
       key: 'signin', hint: 'opens the sign-in screen',
       act: () => { applyTheme(); openSignin(); },
     });
+  } else {
+    const erow = sRow(acc, 'ebtn');
+    sg.add(erow, el('button', 'fbtn', 'Change email'), {
+      key: 'chemail', hint: 'we send a link to the new address',
+      act: () => { applyTheme(); openChangeEmail(); },
+    });
+    const prow2 = sRow(acc, 'ebtn');
+    sg.add(prow2, el('button', 'fbtn', 'Change password'), {
+      key: 'chpass', hint: 'you will need your current password',
+      act: () => { applyTheme(); openChangePassword(); },
+    });
+    const drow = sRow(acc, 'ebtn');
+    sg.add(drow, el('button', 'fbtn danger', 'Delete my account'), {
+      key: 'delacct', hint: 'permanent. asks you to confirm.',
+      act: () => { applyTheme(); openDeleteAccount(); },
+    });
   }
 
   refreshSettings();
@@ -1759,7 +1775,7 @@ function openForm(cfg) {
   const btns = el('div', 'fbtns');
   card.appendChild(btns);
   cfg.buttons.forEach((b, n) => {
-    const btn = el('button', 'fbtn ' + (n === 0 ? 'primary' : 'link'), b.label);
+    const btn = el('button', 'fbtn ' + (b.danger ? 'danger' : n === 0 ? 'primary' : 'link'), b.label);
     btn.tabIndex = -1;
     const i = form.rows.length;
     btn.addEventListener('click', () => { btn.blur(); formMark(i); b.action(); });
@@ -1974,6 +1990,90 @@ async function doFinish(v) {
   startLive();
   await pullSettings();
   finishAuth('[system]: all set, ' + res.profile.display + '! your account is ready.');
+}
+
+function openChangePassword() {
+  openForm({
+    title: 'Change your password',
+    corner: false,
+    intro: 'enter your current password, then pick a new one.',
+    back: () => show('settings'),
+    fields: [
+      { key: 'current', label: 'Current password', type: 'password', max: 64 },
+      { key: 'next', label: 'New password', type: 'password', max: 64 },
+      { key: 'confirm', label: 'Confirm new password', type: 'password', max: 64 },
+    ],
+    buttons: [
+      { label: 'Change password', action: formSubmit },
+      { label: 'Back', action: () => show('settings') },
+    ],
+    submit: async v => {
+      if (!v.current) { formMsg('enter your current password.', 'err'); return formFocus(0); }
+      if (v.next.length < 8) { formMsg('new password: at least 8 characters.', 'err'); return formFocus(1); }
+      if (v.next !== v.confirm) { formMsg('the new passwords do not match.', 'err'); return formFocus(2); }
+      if (v.next === v.current) { formMsg('the new password is the same as the old one.', 'err'); return formFocus(1); }
+      formMsg('changing...', 'dim');
+      const res = await fbChangePassword(v.current, v.next);
+      if (res.error) return formMsg(res.error, 'err');
+      finishAuth('[system]: password changed.');
+    },
+  });
+}
+
+function openChangeEmail() {
+  openForm({
+    title: 'Change your email',
+    corner: false,
+    intro: 'we send a link to the new address. your email only changes once you click it.',
+    back: () => show('settings'),
+    fields: [
+      { key: 'email', label: 'New email', type: 'text', max: 100 },
+      { key: 'current', label: 'Current password', type: 'password', max: 64 },
+    ],
+    buttons: [
+      { label: 'Send link', action: formSubmit },
+      { label: 'Back', action: () => show('settings') },
+    ],
+    submit: async v => {
+      const email = v.email.trim();
+      if (!EMAIL_RE.test(email)) { formMsg('that email address does not look right.', 'err'); return formFocus(0); }
+      if (!v.current) { formMsg('enter your current password.', 'err'); return formFocus(1); }
+      formMsg('sending...', 'dim');
+      const res = await fbChangeEmail(v.current, email);
+      if (res.error) return formMsg(res.error, 'err');
+      formMsg('link sent to ' + email + '. click it to finish. check spam too.', 'ok');
+    },
+  });
+}
+
+function openDeleteAccount() {
+  openForm({
+    title: 'Delete your account',
+    corner: false,
+    intro: 'this permanently deletes your login, profile and username. it cannot be undone. type your username and password to confirm.',
+    back: () => show('settings'),
+    fields: [
+      { key: 'name', label: 'Type your username (' + account.username + ')', type: 'text', max: 24 },
+      { key: 'current', label: 'Password', type: 'password', max: 64 },
+    ],
+    buttons: [
+      { label: 'Delete my account forever', action: formSubmit, danger: true },
+      { label: 'Cancel', action: () => show('settings') },
+    ],
+    submit: async v => {
+      if (v.name.trim().toLowerCase() !== account.username.toLowerCase()) { formMsg('that is not your username.', 'err'); return formFocus(0); }
+      if (!v.current) { formMsg('enter your password.', 'err'); return formFocus(1); }
+      formMsg('deleting...', 'dim');
+      const res = await fbDeleteAccount(v.current, account.username);
+      if (res.error) return formMsg(res.error, 'err');
+      account = null;
+      needsSetup = false;
+      me.uid = res.uid || null;
+      me.name = randomGuestName();
+      startLive();
+      finishAuth('[system]: your account was deleted. you are a guest now.');
+    },
+  });
 }
 
 // ---------- email verification ----------
