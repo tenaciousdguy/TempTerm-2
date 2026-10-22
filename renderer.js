@@ -73,11 +73,13 @@ let verifyTimer = null;
 function show(id) {
   clearInterval(search.timer);
   clearInterval(verifyTimer);
+  cancelQuit();
   current = id;
   $('offline').hidden = online || id === 'splash';
   document.querySelectorAll('.screen').forEach(s => s.hidden = s.id !== id);
   if (id === 'menu') {
     if (!account) me.name = randomGuestName();
+    pickSplashText();
     render();
     if (account && !account.verified) {
       checkVerified();
@@ -90,6 +92,7 @@ function show(id) {
   if (id === 'changelog') { oldOpen = false; renderChangelog(); $('cl-scroll').scrollTop = 0; }
   if (id === 'settings') openSettings();
   if (id === 'profile') renderProfile();
+    if (id === 'credits') { renderCredits(); $('cred-scroll').scrollTop = 0; }
 }
 
 // ---------- boot ----------
@@ -245,6 +248,7 @@ function render() {
   renderAccount();
   renderMenu();
   renderVerify();
+  renderSplashText();
 }
 
 function say(text) {
@@ -289,6 +293,7 @@ screens.menu = {
     if (key === 'arrowdown' || key === 's') move(1);
     else if (key === 'arrowup' || key === 'w') move(-1);
     else if (key === 'enter') activate();
+    else if (key === 'escape' && !e.repeat) startQuitHold();
     else if (key === 'v') resendVerify();
   },
   wheel: dir => {
@@ -296,6 +301,60 @@ screens.menu = {
     move(dir);
   },
 };
+
+const SPLASHES = [
+  'hi lol',
+  'type something. it will be gone soon.',
+  'now with accounts!',
+  'terminal chic since 1.0',
+  'i miss skype',
+  'be kind, it all disappears anyway',
+  'room for ten',
+  'insert will smith memory wipe gif',
+  'made by one very tired person',
+  'have you tried turning it off and on again?',
+  'discord 2: the revenge',
+  'thanks belgium.',
+  'hello little stylus',
+  'rip dream smp',
+];
+let splashText = '';
+let lastSplash = -1;
+
+function pickSplashText() {
+  if (account && Math.random() < 0.2) { splashText = 'welcome back, ' + account.display + '!'; return; }
+  let i;
+  do { i = Math.floor(Math.random() * SPLASHES.length); } while (i === lastSplash && SPLASHES.length > 1);
+  lastSplash = i;
+  splashText = SPLASHES[i];
+}
+
+function renderSplashText() {
+  $('splash-text').textContent = splashText;
+}
+
+const qh = { t0: 0, timer: null };
+
+function cancelQuit() {
+  if (!qh.timer) return;
+  clearInterval(qh.timer);
+  qh.timer = null;
+  say('');
+}
+
+function startQuitHold() {
+  if (qh.timer) return;
+  qh.t0 = Date.now();
+  qh.timer = setInterval(() => {
+    const p = Math.min(1, (Date.now() - qh.t0) / 1500);
+    const n = Math.round(p * 20);
+    say('[system]: hold Esc to quit  [' + '█'.repeat(n) + '·'.repeat(20 - n) + ']');
+    if (p >= 1) { cancelQuit(); window.close(); }
+  }, 60);
+}
+
+document.addEventListener('keyup', e => { if (e.key === 'Escape') cancelQuit(); });
+window.addEventListener('blur', cancelQuit);
 
 // ---------- create room ----------
 const create = { step: 0, type: 0, limit: 10 };
@@ -1152,14 +1211,31 @@ function rpKey(e) {
 const changelog = {
   current: [
     'Rebuilt from scratch',
-    'New boot screen that checks the server and signs you in',
+    'Accounts: unique usernames, display names, email sign-in and password reset',
     'Guest mode: a fresh guest name every time you reach the menu',
-    'Private rooms now show up in the Room Searcher (enter the code to join)',
-    'People who join late can see the room history, including join and leave lines',
-    'Rooms close automatically when everyone leaves, and the messages go with them',
-    'Press Escape to leave a room',
-    'Arrow keys, W / S and the scroll wheel work in every menu',
+    'Profiles with three layouts, pictures, banners and a bio',
+    'Image cropper with pixelation options, or no pixelation at all',
+    'PFPs next to names in chat, and click a name to see their card',
+    'Report a profile, and get a thank-you when action is taken',
+    'Settings sync to your account, plus your own custom themes',
+    'Private rooms show up in the Room Searcher (enter the code to join)',
+    'Join late and still see the room history, including join and leave lines',
+    'Reconnects on its own if your connection drops',
+    'Rooms close and messages vanish when everyone leaves',
+    'A first-launch tutorial and a new boot screen',
+    'Press Escape to leave a room, or hold it on the menu to quit',
     'Text in chat can be selected and copied',
+  ],
+  soon: [
+    'Music player and sounds',
+    'Images and GIFs in chat',
+    'Drawing pad',
+    'Chat commands',
+    'VC',
+    'Minigames',
+    'Moderation.',
+    'More languages',
+    'The classic 1.0 look',
   ],
   old: [
     { v: '1.5', notes: [
@@ -1248,6 +1324,8 @@ function renderChangelog() {
 
   body.appendChild(el('p', 'vhead first ok', '2.0 Updates:'));
   changelog.current.forEach(note => body.appendChild(el('p', 'ok', '- ' + note)));
+  body.appendChild(el('p', 'vhead dim', 'Coming soon:'));
+  changelog.soon.forEach(note => body.appendChild(el('p', 'dim', '- ' + note)));
 
   const toggle = el('p', 'toggle', '> ' + (oldOpen ? '[-]' : '[+]') + ' 1.x Updates:');
   toggle.id = 'cl-toggle';
@@ -1278,8 +1356,38 @@ screens.changelog = {
 };
 
 // ---------- credits ----------
+const credits = [
+  ['development', ['spoon2K_yt']],
+  ['early testers', ['']],
+  ['ideas & suggestions', ['']],
+  ['discord mods', ['']],
+  ['promoters', ['']],
+  ['translations', ['']],
+];
+
+function renderCredits() {
+  const body = $('cred-body');
+  body.innerHTML = '';
+  credits.forEach(([title, names]) => {
+    const sec = el('div', 'esec');
+    sec.appendChild(el('p', 'etitle', '— ' + title + ' —'));
+    names.forEach(n => sec.appendChild(el('p', '', n)));
+    body.appendChild(sec);
+  });
+  body.appendChild(el('p', 'dim italic', 'thank you for using TempTerm.'));
+  body.appendChild(el('p', 'dim italic', 'i miss skype'));
+}
+
 screens.credits = {
-  key: e => { if (e.key === 'Escape') show('menu'); },
+  key: e => {
+    const box = $('cred-scroll');
+    const key = e.key.toLowerCase();
+    if (key === 'arrowdown' || key === 's') box.scrollBy({ top: 60 });
+    else if (key === 'arrowup' || key === 'w') box.scrollBy({ top: -60 });
+    else if (key === 'pagedown') box.scrollBy({ top: 300 });
+    else if (key === 'pageup') box.scrollBy({ top: -300 });
+    else if (key === 'escape') show('menu');
+  },
 };
 
 // ---------- settings sync ----------
@@ -2911,7 +3019,7 @@ function tutSteps() {
     tour(4, 3, 'Settings: themes, window size and more'),
     tour(5, 4, "Changelog: see what's new in TempTerm"),
     tour(6, 5, 'Credits: the people behind TempTerm'),
-    tour(7, 6, 'Quit: close TempTerm'),
+    tour(7, 6, 'Quit: close TempTerm (why would you want to >:('),
     { type: 'enter', sel: 0, target: () => $('account'), text: "and here's where you make your account!", last: true },
   ];
 }

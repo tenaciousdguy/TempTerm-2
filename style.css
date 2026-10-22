@@ -594,3 +594,5 @@ nav { width: 330px; }
 
 .offline { position: fixed; top: 0; left: 0; right: 0; z-index: 150; padding: 2px 12px; background: #2a2208; color: #facc15; font-size: 12px; text-align: center; border-bottom: 1px solid #5c4a0a; }
 .offline[hidden] { display: none; }
+
+.splash { min-height: 1.6em; color: var(--accent); }
