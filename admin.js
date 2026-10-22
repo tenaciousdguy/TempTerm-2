@@ -300,4 +300,52 @@ async function del(r) {
   }
 }
 
+async function loadStatus() {
+  try {
+    const snap = await get(ref(db, 'status'));
+    const s = snap.exists() ? snap.val() : {};
+    $('st-msg').value = s.message || '';
+    $('st-level').value = ['info', 'warning', 'offline'].includes(s.level) ? s.level : 'info';
+    $('st-latest').value = s.latest || '';
+    $('st-link').value = s.link || '';
+    $('stnow').textContent = snap.exists() ? 'live now' : 'no banner';
+  } catch (e) {
+    console.error(e);
+    $('stnow').textContent = 'could not load';
+  }
+}
+
+async function publishStatus() {
+  const message = $('st-msg').value.trim();
+  const latest = $('st-latest').value.trim();
+  const link = $('st-link').value.trim();
+  if (!message && !latest) return clearStatus();
+  const data = { level: $('st-level').value };
+  if (message) data.message = message;
+  if (latest) data.latest = latest;
+  if (link) data.link = link;
+  try {
+    await set(ref(db, 'status'), data);
+    flash('banner published.', 'ok');
+    await loadStatus();
+  } catch (e) {
+    console.error(e);
+    flash('could not publish: ' + (e.code || e.message), 'fail');
+  }
+}
+
+async function clearStatus() {
+  try {
+    await remove(ref(db, 'status'));
+    flash('banner cleared.', 'ok');
+    await loadStatus();
+  } catch (e) {
+    console.error(e);
+    flash('could not clear: ' + (e.code || e.message), 'fail');
+  }
+}
+
+$('st-save').addEventListener('click', publishStatus);
+$('st-clear').addEventListener('click', clearStatus);
+
 start();

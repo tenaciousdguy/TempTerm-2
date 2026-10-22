@@ -34,6 +34,7 @@
     summary { cursor: pointer; color: #facc15; }
     details[open] summary { margin-bottom: 14px; }
     .card.isdone { opacity: 0.85; }
+    select { display: block; width: 100%; height: 36px; margin: 4px 0 14px; padding: 0 10px; background: #0c0c0c; border: 1px solid #444; color: #fff; font: inherit; }
   </style>
 </head>
 <body>
@@ -53,6 +54,19 @@
       <div><button id="refresh">Refresh</button><button id="out">Sign out</button></div>
     </div>
     <p id="flash" class="dim"></p>
+    <div class="card" id="statuscard">
+      <div class="head"><span>Live status banner</span><span id="stnow" class="dim"></span></div>
+      <input id="st-msg" maxlength="200" placeholder="message for everyone's menu (empty = no message)">
+      <select id="st-level">
+        <option value="info">info (cyan, can be hidden)</option>
+        <option value="warning">warning (yellow)</option>
+        <option value="offline">offline (red)</option>
+      </select>
+      <input id="st-latest" maxlength="16" placeholder="newest version, like 2.0.1 (optional)">
+      <input id="st-link" maxlength="100" placeholder="where to get it (optional)">
+      <button id="st-save" class="primary">Publish</button>
+      <button id="st-clear" class="danger">Clear banner</button>
+    </div>
     <div id="list"></div>
     <details id="donebox"><summary id="donesum">Done (0)</summary><div id="donelist"></div></details>
   </div>

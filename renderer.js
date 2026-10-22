@@ -4,7 +4,7 @@ import {
   fbWatchNotices, fbClearNotice, fbWatchProfile, fbChangeUsername, fbLoadSettings,
   fbSaveSettings, fbFinishProfile, withTimeout,
   fbCreateRoom, fbJoinRoom, fbLeaveRoom, fbCleanup, fbSendMessage, fbWatchRoom, fbListRooms,
-  fbChangePassword, fbChangeEmail, fbDeleteAccount
+  fbChangePassword, fbChangeEmail, fbDeleteAccount, fbWatchStatus
 } from './firebase.js';
 import {
   settings, save, THEMES, SIZES, applyTheme, applyColors, applyUi, applyPfps, applySize,
@@ -37,6 +37,7 @@ let everOnline = false;
 let sessionOk = false;
 let needsSetup = false;
 const firstRun = localStorage.getItem('tutorialDone') !== '1';
+const APP_VERSION = '2.0.0';
 
 // ---------- key router ----------
 const screens = {};
@@ -249,6 +250,7 @@ function render() {
   renderMenu();
   renderVerify();
   renderSplashText();
+  renderBanner();
 }
 
 function say(text) {
@@ -294,6 +296,7 @@ screens.menu = {
     else if (key === 'arrowup' || key === 'w') move(-1);
     else if (key === 'enter') activate();
     else if (key === 'escape' && !e.repeat) startQuitHold();
+    else if (key === 'x') dismissBanner();
     else if (key === 'v') resendVerify();
   },
   wheel: dir => {
@@ -2991,6 +2994,57 @@ function startLive() {
   if (account) noticeUi.stopProfile = fbWatchProfile(uid, onProfileLive);
 }
 
+// ---------- status banner ----------
+const banner = { data: null, dismissed: '', seen: false };
+
+function cmpVersion(a, b) {
+  const pa = String(a).split('.').map(n => parseInt(n, 10) || 0);
+  const pb = String(b).split('.').map(n => parseInt(n, 10) || 0);
+  for (let i = 0; i < Math.max(pa.length, pb.length); i++) {
+    const d = (pa[i] || 0) - (pb[i] || 0);
+    if (d) return d;
+  }
+  return 0;
+}
+
+function bannerKey() {
+  return JSON.stringify(banner.data || null);
+}
+
+function renderBanner() {
+  const box = $('statusbar');
+  const d = banner.data || {};
+  const msg = typeof d.message === 'string' ? d.message.trim() : '';
+  const level = ['info', 'warning', 'offline'].includes(d.level) ? d.level : 'info';
+  const upd = typeof d.latest === 'string' && cmpVersion(d.latest, APP_VERSION) > 0 ? d.latest : '';
+  const hideable = level === 'info';
+  const hidden = hideable && banner.dismissed === bannerKey();
+  const visible = !!(msg || upd) && !hidden && current === 'menu' && !tut.active;
+  box.hidden = !visible;
+  if (!visible) return;
+  box.className = 'statusbar lv-' + level;
+  box.replaceChildren();
+  if (msg) box.appendChild(el('span', 'sbmsg', msg));
+  if (upd) box.appendChild(el('span', 'sbupd', (msg ? '   ·   ' : '') + 'update available: v' + upd + (d.link ? ' (' + d.link + ')' : '')));
+  if (hideable) box.appendChild(el('span', 'dim small', '   press X to hide'));
+}
+
+function dismissBanner() {
+  if (!banner.data) return;
+  banner.dismissed = bannerKey();
+  renderBanner();
+}
+
+function onStatus(data) {
+  const prev = banner.data;
+  banner.data = data;
+  renderBanner();
+  const msg = data && typeof data.message === 'string' ? data.message.trim() : '';
+  const old = prev && typeof prev.message === 'string' ? prev.message.trim() : '';
+  if (banner.seen && room && msg && msg !== old) addLocalLine('[system]: ' + msg);
+  banner.seen = true;
+}
+
 // ---------- tutorial ----------
 const tut = { active: false, step: 0, steps: [], last: 0, shown: false, filled: false, timers: [] };
 const GAP = 350;
@@ -3198,5 +3252,6 @@ if (firstRun) {
   $('splash-title').textContent = 'Welcome to TempTerm!';
   $('splash-ver').hidden = true;
 }
+fbWatchStatus(onStatus);
 render();
 boot();

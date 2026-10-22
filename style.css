@@ -596,3 +596,13 @@ nav { width: 330px; }
 .offline[hidden] { display: none; }
 
 .splash { min-height: 1.6em; color: var(--accent); }
+
+.statusbar { position: absolute; top: 0; left: 0; right: 0; z-index: 5; padding: 4px 16px; font-size: 12px; line-height: 1.4; text-align: center; border-bottom: 1px solid var(--line2); background: color-mix(in srgb, var(--text) 6%, var(--bg)); }
+.statusbar[hidden] { display: none; }
+.statusbar.lv-info .sbmsg { color: var(--code); }
+.statusbar.lv-warning { background: #2a2208; border-bottom-color: #5c4a0a; }
+.statusbar.lv-warning .sbmsg { color: #facc15; }
+.statusbar.lv-offline { background: #2a0c0c; border-bottom-color: #7f1d1d; }
+.statusbar.lv-offline .sbmsg { color: #f87171; }
+.sbupd { color: #facc15; }
+.tut-active .statusbar { display: none; }

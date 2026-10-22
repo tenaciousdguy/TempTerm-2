@@ -63,6 +63,10 @@ export async function fbGetUser(uid) {
   return snap.val();
 }
 
+export function fbWatchStatus(cb) {
+  return onValue(ref(db, 'status'), snap => cb(snap.exists() ? snap.val() : null), err => console.error('status watch:', err));
+}
+
 export async function fbLoadSettings(uid) {
   const snap = await get(ref(db, `users/${uid}/settings`));
   return snap.exists() ? snap.val() : null;
