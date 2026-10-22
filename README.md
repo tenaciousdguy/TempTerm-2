@@ -1,14 +1,18 @@
 # TempTerm 2.0
 
-A terminal-style chat app where every message is deleted once everyone has left the room.
+A terminal-style chat app where every message disappears once everyone has left the room.
 
-Built with Electron and Firebase. Work in progress.
+> Work in progress. There are no downloads yet.
 
--------------------------------------------------------
+## What it does
 
-## Status
-Accounts and profiles done. A few little things left i think
+- Public and private rooms (up to 10 people) with live chat
+- Messages and rooms are deleted when the last person leaves
+- Accounts with unique usernames, or jump in as a guest
+- Profiles with layouts, pictures, banners and a bio
+- Themes, custom themes, and settings that follow your account
+- Keyboard-first menus (arrow keys, W/S, scroll wheel)
 
-### Other...
-source is public to view, all rights reserved.
-Contact: contacttempterm@gmail.com
+## Contact
+
+contacttempterm@gmail.com

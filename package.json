@@ -1,8 +1,10 @@
 {
   "name": "tempterm2",
   "version": "2.0.0-rc.1",
-  "description": "TempTerm 2.0",
+  "description": "A terminal-style chat app where messages vanish when everyone leaves.",
   "main": "main.js",
+  "private": true,
+  "license": "UNLICENSED",
   "scripts": {
     "start": "electron .",
     "build": "electron-builder",
