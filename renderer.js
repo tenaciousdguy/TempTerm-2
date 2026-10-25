@@ -11,6 +11,7 @@ import {
   getTheme, newThemeId, setSaveHook, getSyncable, applyRemote,
 } from './settings.js';
 import { createGrid, scrollInto } from './ui.js';
+import { openEditor, closeEditor, editorKey } from './editor.js';
 
 const $ = id => document.getElementById(id);
 
@@ -626,6 +627,7 @@ screens.search = {
 
 // ---------- chat ----------
 let stopWatch = null;
+let pinned = true;
 
 async function enterRoom(code, fresh = false, lid = null) {
   if (!me.uid) return 'not signed in. check your connection.';
@@ -674,17 +676,23 @@ async function rejoinRoom() {
   }
 }
 
+function renderChatHeader() {
+  const c = $('count');
+  c.replaceChildren();
+  if (!room) return;
+  const n = room.members ? Object.keys(room.members).length : 0;
+  c.append(el('b', '', room.code), document.createTextNode('  ·  ' + room.type + '  ·  ' + n + '/' + room.limit + ' here'));
+}
+
 function startWatch() {
   stopWatch = fbWatchRoom(room.code, {
     onMessage: (key, m) => {
-      const node = m.type === 'system' ? lineEl('[system]: ' + m.text, 'dim') : msgEl(m.name, m.text, m.uid);
-      insertLine(node, key, m.ts);
+      const node = m.type === 'system' ? lineEl('[system]: ' + m.text) : msgEl(m);
+      insertLine(node, key, m.ts, m.uid === me.uid);
     },
     onMembers: members => {
       room.members = members;
-      const n = Object.keys(members).length;
-      $('count').textContent =
-        n + ' chatter' + (n === 1 ? '' : 's') + ' in room (limit ' + room.limit + ')  ·  Tab = see who is here';
+      renderChatHeader();
       if (online && me.uid && !members[me.uid] && !rj.busy) rejoinRoom();
     },
     onError: err => {
@@ -697,6 +705,7 @@ function startWatch() {
 function restartWatch() {
   if (stopWatch) { stopWatch(); stopWatch = null; }
   $('log').innerHTML = '';
+  pinned = true;
   startWatch();
 }
 
@@ -712,23 +721,57 @@ async function leaveCurrentRoom() {
   try { await fbLeaveRoom(code, name, lid); } catch (e) { console.error(e); }
 }
 
-function lineEl(text, cls) {
-  const p = document.createElement('p');
-  p.className = cls || '';
-  p.textContent = text;
-  return p;
+function timeLabel(ts) {
+  if (!ts) return '';
+  return new Date(ts).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
 }
 
-function msgEl(name, text, uid) {
-  const p = document.createElement('p');
+function readable(hex) {
+  if (!/^#[0-9a-f]{6}$/i.test(hex || '')) return null;
+  const n = parseInt(hex.slice(1), 16);
+  let r = n >> 16, g = (n >> 8) & 255, b = n & 255;
+  const lum = 0.299 * r + 0.587 * g + 0.114 * b;
+  if (lum >= 110) return hex;
+  const t = (110 - lum) / (255 - lum);
+  r = Math.round(r + (255 - r) * t);
+  g = Math.round(g + (255 - g) * t);
+  b = Math.round(b + (255 - b) * t);
+  return '#' + [r, g, b].map(v => v.toString(16).padStart(2, '0')).join('');
+}
+
+function lineEl(text) {
+  return el('div', 'sysl', text);
+}
+
+function msgEl(m) {
+  const node = el('div', 'm');
+  node.dataset.uid = m.uid || '';
+
+  const head = el('div', 'mhead');
   const who = el('span', 'who');
-  who.dataset.uid = uid || '';
-  who.dataset.name = name;
+  who.dataset.uid = m.uid || '';
+  who.dataset.name = m.name;
   const pf = el('span', 'pfsq cpf');
-  who.append(pf, el('span', 'wname', name));
-  p.append(who, ': ' + text);
-  getUser(uid).then(u => fillPfp(pf, u));
-  return p;
+  who.append(pf, el('span', 'wname', m.name));
+  head.append(who, el('span', 'mtime', timeLabel(m.ts)));
+  node.appendChild(head);
+
+  if (m.text) node.appendChild(el('div', 'mbody', m.text));
+
+  if (m.img && PNG.test(m.img)) {
+    const img = el('img', 'mimg');
+    img.src = m.img;
+    img.alt = 'picture';
+    img.addEventListener('load', () => { if (pinned) toBottom(); });
+    node.appendChild(img);
+  }
+
+  getUser(m.uid).then(u => {
+    fillPfp(pf, u);
+    const col = u ? readable(withDefaults(u).accent) : null;
+    if (col) node.style.setProperty('--uc', col);
+  });
+  return node;
 }
 
 function isAfter(a, b) {
@@ -736,51 +779,249 @@ function isAfter(a, b) {
   return ta !== tb ? ta > tb : a.dataset.key > b.dataset.key;
 }
 
-function insertLine(node, key, ts) {
+function regroup(node) {
+  if (!node || !node.classList || !node.classList.contains('m')) return;
+  const prev = node.previousElementSibling;
+  const cont = !!(prev && prev.classList.contains('m') && node.dataset.uid
+    && prev.dataset.uid === node.dataset.uid
+    && Number(node.dataset.ts) - Number(prev.dataset.ts) < 300000);
+  node.classList.toggle('cont', cont);
+}
+
+function toBottom() {
+  const log = $('log');
+  log.scrollTop = log.scrollHeight;
+  $('newmsg').hidden = true;
+}
+
+function insertLine(node, key, ts, mine) {
   node.dataset.key = key;
   node.dataset.ts = ts || 0;
   const log = $('log');
+  const stick = pinned || mine;
   let prev = log.lastElementChild;
   while (prev && isAfter(prev, node)) prev = prev.previousElementSibling;
   log.insertBefore(node, prev ? prev.nextSibling : log.firstChild);
-  log.scrollTop = log.scrollHeight;
+  regroup(node);
+  regroup(node.nextElementSibling);
+  if (stick) { toBottom(); pinned = true; }
+  else $('newmsg').hidden = false;
 }
 
 function addLocalLine(text) {
-  const log = $('log');
-  log.appendChild(lineEl(text, 'dim'));
-  log.scrollTop = log.scrollHeight;
+  $('log').appendChild(lineEl(text));
+  if (pinned) toBottom();
 }
 
 function enterChat() {
   $('log').innerHTML = '';
   $('msg').value = '';
-  $('count').textContent = '';
   userCache.clear();
   resetChatUi();
   room.members = {};
   rj.tries = [];
+  pinned = true;
+  $('newmsg').hidden = true;
+  renderChatHeader();
+  updateCmds();
   startWatch();
   $('msg').focus();
 }
 
-const msgInput = $('msg');
-const sendTimes = [];
+$('log').addEventListener('scroll', () => {
+  const log = $('log');
+  pinned = log.scrollHeight - log.scrollTop - log.clientHeight < 80;
+  if (pinned) $('newmsg').hidden = true;
+});
 
-msgInput.addEventListener('keydown', e => {
-  if (e.key !== 'Enter' || !room) return;
-  const text = msgInput.value.trim();
-  if (!text) return;
+$('newmsg').addEventListener('click', () => { toBottom(); $('msg').focus(); });
+
+// ---------- commands ----------
+const commands = {
+  image: { desc: 'send a picture', run: () => pickChatImage() },
+  draw: { desc: 'draw something to send', run: () => openDrawPad() },
+  gif: { desc: 'search for a gif (coming soon)', soon: true },
+  kick: { desc: 'remove someone from the room (coming soon)', soon: true },
+  voice: { desc: 'join a voice call (coming soon)', soon: true },
+  leave: { desc: 'leave the room', run: () => leaveCurrentRoom() },
+};
+
+let cmdMatches = [];
+let cmdSel = 0;
+const msgInput = $('msg');
+
+function pickCommand(name) {
+  msgInput.value = '/' + name + ' ';
+  cmdSel = 0;
+  updateCmds();
+  msgInput.focus();
+}
+
+function updateCmds() {
+  const box = $('cmds');
+  const v = msgInput.value.toLowerCase();
+  cmdMatches = [];
+  if (v.startsWith('/') && !v.includes(' ')) {
+    cmdMatches = Object.keys(commands).filter(n => ('/' + n).startsWith(v));
+  }
+  if (!cmdMatches.length) { box.hidden = true; return; }
+  cmdSel = Math.min(cmdSel, cmdMatches.length - 1);
+  box.innerHTML = '';
+  cmdMatches.forEach((n, i) => {
+    const row = el('div', 'cmd' + (i === cmdSel ? ' sel' : '') + (commands[n].soon ? ' soon' : ''));
+    row.append(el('span', 'name', '/' + n), el('span', 'desc', commands[n].desc));
+    row.addEventListener('mousedown', ev => { ev.preventDefault(); pickCommand(n); });
+    box.appendChild(row);
+  });
+  box.hidden = false;
+}
+
+function runCommand(text) {
+  const name = text.slice(1).split(' ')[0].toLowerCase();
+  const cmd = commands[name];
+  if (!cmd) addLocalLine('[system]: unknown command: /' + name);
+  else if (cmd.run) cmd.run();
+  else addLocalLine('[system]: /' + name + ' is coming soon.');
+}
+
+// ---------- sending ----------
+const sendTimes = [];
+const imgTimes = [];
+
+function sendText(text) {
   if (!online) return addLocalLine('[system]: you are offline. your message was not sent.');
   const now = Date.now();
   while (sendTimes.length && now - sendTimes[0] > 5000) sendTimes.shift();
   if (sendTimes.length >= 6) return addLocalLine('[system]: slow down a little.');
   sendTimes.push(now);
   msgInput.value = '';
+  updateCmds();
   fbSendMessage(room.code, me.name, text).catch(err => {
     console.error(err);
     addLocalLine('[system]: message failed to send.');
   });
+}
+
+async function sendImageMessage(url, caption) {
+  if (!room) return;
+  if (!online) return addLocalLine('[system]: you are offline. the picture was not sent.');
+  const now = Date.now();
+  while (imgTimes.length && now - imgTimes[0] > 10000) imgTimes.shift();
+  if (imgTimes.length >= 2) return addLocalLine('[system]: slow down, one picture at a time.');
+  imgTimes.push(now);
+  try {
+    await fbSendMessage(room.code, me.name, caption, { img: url });
+  } catch (err) {
+    console.error(err);
+    addLocalLine('[system]: the picture failed to send.');
+  }
+}
+
+msgInput.addEventListener('input', () => { cmdSel = 0; updateCmds(); });
+
+msgInput.addEventListener('keydown', e => {
+  const open = !$('cmds').hidden;
+
+  if (open && (e.key === 'ArrowDown' || e.key === 'ArrowUp')) {
+    e.preventDefault();
+    e.stopPropagation();
+    cmdSel = (cmdSel + (e.key === 'ArrowDown' ? 1 : -1) + cmdMatches.length) % cmdMatches.length;
+    updateCmds();
+    return;
+  }
+
+  if (open && (e.key === 'Tab' || e.key === 'Enter')) {
+    const pick = cmdMatches[cmdSel];
+    if (e.key === 'Tab' || msgInput.value.trim().toLowerCase() !== '/' + pick) {
+      e.preventDefault();
+      e.stopPropagation();
+      pickCommand(pick);
+      return;
+    }
+  }
+
+  if (open && e.key === 'Escape') {
+    e.stopPropagation();
+    $('cmds').hidden = true;
+    return;
+  }
+
+  if (e.key !== 'Enter' || !room) return;
+  const text = msgInput.value.trim();
+  if (!text) return;
+  if (text.startsWith('/')) {
+    msgInput.value = '';
+    updateCmds();
+    runCommand(text);
+    return;
+  }
+  sendText(text);
+});
+
+// ---------- pictures ----------
+async function pickChatImage() {
+  const file = await pickFile();
+  if (file) openChatImageFromFile(file);
+}
+
+async function openChatImageFromFile(file) {
+  if (!room || !file) return;
+  if (!file.type || !file.type.startsWith('image/')) return addLocalLine('[system]: that is not a picture.');
+  if (!online) return addLocalLine('[system]: you are offline.');
+  try {
+    const img = await loadImage(file);
+    openChatEditor({ image: img, title: 'Send picture' });
+  } catch (e) {
+    console.error(e);
+    addLocalLine('[system]: could not read that picture.');
+  }
+}
+
+function openDrawPad() {
+  if (!online) return addLocalLine('[system]: you are offline.');
+  openChatEditor({ blank: { w: 640, h: 400, bg: '#ffffff' }, title: 'Drawing pad' });
+}
+
+function openChatEditor(src) {
+  if (!room) return;
+  closeCard();
+  chatUi.ie = true;
+  msgInput.blur();
+  $('cmds').hidden = true;
+  openEditor($('ie'), {
+    ...src,
+    onSend: (url, caption) => { closeChatEditor(); sendImageMessage(url, caption); },
+    onCancel: () => closeChatEditor(),
+  });
+}
+
+function closeChatEditor() {
+  chatUi.ie = false;
+  closeEditor();
+  if (room) msgInput.focus();
+}
+
+$('attach').addEventListener('click', () => { $('attach').blur(); pickChatImage(); });
+
+function chatBusy() {
+  return chatUi.ie || chatUi.iv || chatUi.pv || chatUi.rp || chatUi.who;
+}
+
+document.addEventListener('paste', e => {
+  if (current !== 'chat' || !room || chatBusy()) return;
+  const items = e.clipboardData && e.clipboardData.items ? Array.from(e.clipboardData.items) : [];
+  const it = items.find(i => i.kind === 'file' && i.type.startsWith('image/'));
+  if (!it) return;
+  e.preventDefault();
+  openChatImageFromFile(it.getAsFile());
+});
+
+document.addEventListener('dragover', e => e.preventDefault());
+document.addEventListener('drop', e => {
+  e.preventDefault();
+  if (current !== 'chat' || !room || chatBusy()) return;
+  const f = e.dataTransfer && e.dataTransfer.files && e.dataTransfer.files[0];
+  if (f && f.type && f.type.startsWith('image/')) openChatImageFromFile(f);
 });
 
 $('log').addEventListener('mouseup', () => {
@@ -789,9 +1030,15 @@ $('log').addEventListener('mouseup', () => {
 
 screens.chat = {
   key: e => {
+    if (chatUi.ie) return editorKey(e);
+    if (chatUi.iv) return ivKey(e);
     if (chatUi.rp) return rpKey(e);
     if (chatUi.pv) return pvKey(e);
     if (chatUi.who) return whoKey(e);
+    const log = $('log');
+    if (e.key === 'PageUp') { e.preventDefault(); log.scrollBy({ top: -300 }); return; }
+    if (e.key === 'PageDown') { e.preventDefault(); log.scrollBy({ top: 300 }); return; }
+    if (e.key === 'End' && !msgInput.value) { e.preventDefault(); toBottom(); return; }
     if (e.key === 'Escape') {
       if (chatUi.card) return closeCard();
       return leaveCurrentRoom();
@@ -803,7 +1050,7 @@ screens.chat = {
 
 // ---------- people in chat ----------
 const userCache = new Map();
-const chatUi = { card: false, who: false, pv: false, rp: false, whoSel: 0, whoList: [], pvUid: null, pvUser: null };
+const chatUi = { card: false, who: false, pv: false, rp: false, ie: false, iv: false, whoSel: 0, whoList: [], pvUid: null, pvUser: null };
 
 function getUser(uid) {
   if (!uid) return Promise.resolve(null);
@@ -849,7 +1096,7 @@ function guestNode(name) {
   row.append(pf, info);
   const bio = el('div', 'pbio');
   bio.append(el('span', 'dim', 'bio'),
-    document.createTextNode('\nthis user is a guest!\nno profile, no plans, no commitments.\nthey vanish when the room does.'));
+    document.createTextNode('\nthis user is a guest.\nthey probably stink.'));
   box.append(row, bio);
   frameEl(box, 'finger guest');
   return box;
@@ -861,11 +1108,13 @@ function closeCard() {
 }
 
 function resetChatUi() {
-  chatUi.card = chatUi.who = chatUi.pv = chatUi.rp = false;
+  chatUi.card = chatUi.who = chatUi.pv = chatUi.rp = chatUi.ie = chatUi.iv = false;
   $('card').hidden = true;
   $('wl').hidden = true;
   $('pv').hidden = true;
   $('rp').hidden = true;
+  $('iv').hidden = true;
+  closeEditor();
 }
 
 async function openCard(anchor) {
@@ -918,13 +1167,13 @@ async function openProfileOverlay(uid, name) {
   $('pv').hidden = false;
   $('pv').scrollTop = 0;
   chatUi.pv = true;
-  $('msg').blur();
+  msgInput.blur();
 }
 
 function closePv() {
   chatUi.pv = false;
   $('pv').hidden = true;
-  $('msg').focus();
+  msgInput.focus();
 }
 
 function pvKey(e) {
@@ -963,14 +1212,14 @@ function openWho() {
   chatUi.whoSel = Math.max(0, chatUi.whoList.findIndex(m => m.uid === me.uid));
   closeCard();
   chatUi.who = true;
-  $('msg').blur();
+  msgInput.blur();
   renderWho();
 }
 
 function closeWho() {
   chatUi.who = false;
   $('wl').hidden = true;
-  $('msg').focus();
+  msgInput.focus();
 }
 
 function moveWho(step) {
@@ -991,7 +1240,34 @@ function whoKey(e) {
   }
 }
 
+function openViewer(src) {
+  const box = $('iv');
+  box.replaceChildren();
+  const img = el('img', 'ivimg');
+  img.src = src;
+  img.alt = '';
+  box.append(img, el('p', 'pvhint dim small', 'Enter, Esc or click = close'));
+  box.hidden = false;
+  chatUi.iv = true;
+  msgInput.blur();
+}
+
+function closeViewer() {
+  chatUi.iv = false;
+  $('iv').hidden = true;
+  msgInput.focus();
+}
+
+function ivKey(e) {
+  e.preventDefault();
+  if (e.key === 'Escape' || e.key === 'Enter' || e.key === ' ') closeViewer();
+}
+
+$('iv').addEventListener('click', closeViewer);
+
 $('log').addEventListener('click', e => {
+  const pic = e.target.closest('.mimg');
+  if (pic) { openViewer(pic.src); return; }
   const who = e.target.closest('.who');
   if (!who) return;
   e.stopPropagation();
@@ -1001,7 +1277,6 @@ $('log').addEventListener('click', e => {
 $('chat').addEventListener('click', e => {
   if (chatUi.card && !e.target.closest('#card')) closeCard();
 });
-
 // ---------- reporting ----------
 const RP_FIELDS = [
   ['username', 'Username'],
@@ -1218,16 +1493,11 @@ const changelog = {
     'Guest mode: a fresh guest name every time you reach the menu',
     'Profiles with three layouts, pictures, banners and a bio',
     'Image cropper with pixelation options, or no pixelation at all',
-    'PFPs next to names in chat, and click a name to see their card',
-    'Report a profile, and get a thank-you when action is taken',
-    'Settings sync to your account, plus your own custom themes',
-    'Private rooms show up in the Room Searcher (enter the code to join)',
-    'Join late and still see the room history, including join and leave lines',
+    'PFPs next to names in chat, and click a name to see their mini-profile',
+    'Report a profile, and get a thank-you when action is taken :)',
+    'Settings and custom themes now sync to your account',
     'Reconnects on its own if your connection drops',
-    'Rooms close and messages vanish when everyone leaves',
     'A first-launch tutorial and a new boot screen',
-    'Press Escape to leave a room, or hold it on the menu to quit',
-    'Text in chat can be selected and copied',
   ],
   soon: [
     'Music player and sounds',

@@ -57,11 +57,17 @@
   </section>
 
   <section id="chat" class="screen chat" hidden>
-    <p id="count" class="dim small"></p>
+    <div class="chead">
+      <span id="count"></span>
+      <span class="dim">Tab = who's here · Esc = leave</span>
+    </div>
     <div id="log"></div>
+    <div id="newmsg" class="newmsg" hidden>new messages ↓ (End)</div>
+    <div id="cmds" class="cmds" hidden></div>
     <div class="inputbar">
+      <button id="attach" class="attach" tabindex="-1" title="send a picture">+</button>
       <span class="prompt">&gt;</span>
-      <input id="msg" type="text" placeholder="Type a message..." maxlength="500" autocomplete="off" spellcheck="false">
+      <input id="msg" type="text" placeholder="Type a message, or / for commands" maxlength="500" autocomplete="off" spellcheck="false">
     </div>
     <div id="card" class="pcard" hidden></div>
     <div id="wl" class="wl" hidden></div>
@@ -71,6 +77,8 @@
       <div id="pv-card"></div>
     </div>
     <div id="rp" class="pv" hidden><div id="rp-body"></div></div>
+    <div id="ie" class="pv ie" hidden></div>
+    <div id="iv" class="pv iv" hidden></div>
   </section>
 
     <section id="changelog" class="screen page" hidden>

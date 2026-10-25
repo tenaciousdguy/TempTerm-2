@@ -465,10 +465,11 @@ export async function fbLeaveRoom(code, name, lid) {
   await fbCleanup(code);
 }
 
-export function fbSendMessage(code, name, text) {
-  return withTimeout(push(ref(db, `rooms/${code}/messages`), {
-    uid: auth.currentUser.uid, name, text, ts: serverTimestamp(),
-  }), 10000);
+export function fbSendMessage(code, name, text, extra = {}) {
+  const msg = { uid: auth.currentUser.uid, name, ts: serverTimestamp() };
+  if (text || !extra.img) msg.text = text;
+  if (extra.img) msg.img = extra.img;
+  return withTimeout(push(ref(db, `rooms/${code}/messages`), msg), extra.img ? 20000 : 10000);
 }
 
 export function fbWatchRoom(code, handlers) {

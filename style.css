@@ -606,3 +606,53 @@ nav { width: 330px; }
 .statusbar.lv-offline .sbmsg { color: #f87171; }
 .sbupd { color: #facc15; }
 .tut-active .statusbar { display: none; }
+
+.chead { display: flex; justify-content: space-between; align-items: center; gap: 12px; flex: none; height: 30px; padding: 0 16px; border-bottom: 1px solid var(--line2); font-size: 12px; }
+.chead #count { position: static; color: var(--dim); user-select: text; }
+.chead #count b { color: var(--bright); font-weight: normal; letter-spacing: 1px; }
+.screen.chat #log { padding: 10px 16px 12px; gap: 0; }
+
+#log .m { padding: 1px 0 1px 12px; margin-top: 12px; border-left: 2px solid var(--uc, var(--line)); }
+#log .m:first-child, #log .m.cont { margin-top: 0; }
+#log .mhead { display: flex; align-items: center; gap: 10px; line-height: 1.5; }
+#log .m.cont .mhead { display: none; }
+#log .who { display: inline-flex; align-items: center; gap: 8px; cursor: pointer; }
+#log .wname { color: var(--uc, var(--bright)); font-weight: bold; }
+#log .mtime { color: var(--dim); font-size: 11px; }
+#log .mbody { line-height: 1.5; white-space: pre-wrap; word-break: break-word; }
+#log .mimg { display: block; max-width: 320px; max-height: 240px; margin: 4px 0; border: 1px solid var(--line); cursor: zoom-in; }
+#log .sysl { margin: 8px 0 0; font-size: 12px; font-style: italic; color: var(--dim); white-space: pre-wrap; word-break: break-word; }
+#log .cpf { width: 20px; height: 20px; margin-right: 0; font-size: 12px; }
+
+.attach { flex: none; width: 26px; height: 26px; padding: 0; background: transparent; border: 1px solid var(--line); color: var(--dim); font: inherit; line-height: 1; cursor: pointer; }
+.attach:hover { color: var(--bright); border-color: var(--bright); }
+.newmsg { position: absolute; right: 24px; bottom: 58px; z-index: 20; padding: 2px 12px; background: var(--panel); border: 1px solid var(--accent); color: var(--accent); font-size: 12px; cursor: pointer; }
+.newmsg[hidden] { display: none; }
+
+.cmds { position: absolute; left: 16px; bottom: 54px; z-index: 30; width: 420px; max-width: calc(100% - 32px); background: var(--panel); border: 1px solid var(--line); }
+.cmds[hidden] { display: none; }
+.cmd { display: flex; justify-content: space-between; align-items: center; gap: 14px; height: 30px; padding: 0 12px; font-size: 13px; cursor: pointer; }
+.cmd .name { color: var(--code); }
+.cmd .desc { color: var(--dim); font-size: 12px; }
+.cmd.sel { background: color-mix(in srgb, var(--text) 12%, var(--bg)); color: var(--bright); }
+.cmd.sel .desc { color: var(--text); }
+.cmd.soon .name { color: var(--dim); }
+
+.ie { display: flex; flex-direction: column; padding: 0; overflow: hidden; z-index: 55; background: rgba(0, 0, 0, 0.96); }
+.ie-top { display: flex; align-items: center; flex-wrap: wrap; gap: 8px 16px; padding: 8px 14px; border-bottom: 1px solid var(--line2); font-size: 13px; }
+.ie-title { color: var(--bright); }
+.ie-group { display: flex; align-items: center; gap: 6px; }
+.ie-sw { width: 20px; height: 20px; padding: 0; border: 2px solid var(--bg); cursor: pointer; }
+.ie-sw.sel { border-color: var(--bright); }
+.ie-pick { width: 28px; height: 22px; padding: 0; border: 1px solid var(--line); background: transparent; cursor: pointer; }
+.ie-stage { flex: 1; min-height: 0; display: flex; align-items: center; justify-content: center; padding: 12px; overflow: hidden; }
+.ie-view { display: block; border: 1px solid var(--line); background: #161616; touch-action: none; }
+.ie-msg { margin: 0; padding: 0 14px; min-height: 1.5em; font-size: 12px; }
+.ie-bottom { display: flex; align-items: center; gap: 10px; padding: 8px 14px; border-top: 1px solid var(--line2); }
+.ie-cap { flex: 1; min-width: 0; height: 36px; padding: 0 12px; background: transparent; border: 1px solid var(--line); outline: 0; color: var(--bright); font: inherit; user-select: text; }
+.ie-cap:focus { border-color: var(--bright); }
+.ie-hint { margin: 0; padding: 0 14px 8px; font-size: 12px; font-style: italic; color: var(--dim); }
+.chip.go { border-color: var(--accent); color: var(--accent); }
+
+.iv { display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 10px; padding: 16px; z-index: 60; background: rgba(0, 0, 0, 0.92); cursor: zoom-out; }
+.ivimg { max-width: 100%; max-height: calc(100% - 30px); border: 1px solid var(--line); image-rendering: auto; }
