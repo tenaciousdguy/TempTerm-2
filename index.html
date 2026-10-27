@@ -2,13 +2,13 @@
 <html>
 <head>
   <meta charset="utf-8">
-  <title>TempTerm 2.0 Pre-Release 1</title>
+  <title>TempTerm 2.0</title>
   <link rel="stylesheet" href="style.css">
 </head>
 <body>
   <section id="splash" class="screen center">
     <h1 id="splash-title">TempTerm</h1>
-    <p id="splash-ver" class="dim italic">v2.0 pre-release 1</p>
+    <p id="splash-ver" class="dim italic">v2.0</p>
     <pre id="boot"></pre>
     <p id="tap" class="dim">tap to continue</p>
   </section>
@@ -16,9 +16,8 @@
   <section id="menu" class="screen" hidden>
     <div id="statusbar" class="statusbar" hidden></div>
     <div id="account" class="account"></div>
-        <div class="head">
+    <div class="head">
       <h2>Welcome to TempTerm!</h2>
-      <p class="dim small italic">contact: contacttempterm@gmail.com</p>
       <p id="splash-text" class="splash small italic"></p>
     </div>
     <nav id="menu-items"></nav>
@@ -64,9 +63,10 @@
     <div id="log"></div>
     <div id="newmsg" class="newmsg" hidden>new messages ↓ (End)</div>
     <div id="cmds" class="cmds" hidden></div>
+    <div id="plusmenu" class="cmds" hidden></div>
     <div class="inputbar">
-      <button id="attach" class="attach" tabindex="-1" title="send a picture">+</button>
-      <span class="prompt">&gt;</span>
+      <button id="attach" class="attach" tabindex="-1" title="more">+</button>
+      <span id="prompt" class="prompt">&gt;</span>
       <input id="msg" type="text" placeholder="Type a message, or / for commands" maxlength="500" autocomplete="off" spellcheck="false">
     </div>
     <div id="card" class="pcard" hidden></div>

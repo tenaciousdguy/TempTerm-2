@@ -4,7 +4,7 @@ import {
   fbWatchNotices, fbClearNotice, fbWatchProfile, fbChangeUsername, fbLoadSettings,
   fbSaveSettings, fbFinishProfile, withTimeout,
   fbCreateRoom, fbJoinRoom, fbLeaveRoom, fbCleanup, fbSendMessage, fbWatchRoom, fbListRooms,
-  fbChangePassword, fbChangeEmail, fbDeleteAccount, fbWatchStatus
+  fbChangePassword, fbChangeEmail, fbDeleteAccount, fbWatchStatus, fbWatchUser
 } from './firebase.js';
 import {
   settings, save, THEMES, SIZES, applyTheme, applyColors, applyUi, applyPfps, applySize,
@@ -322,10 +322,14 @@ const SPLASHES = [
   'hello little stylus',
   'rip dream smp',
 ];
+const RARE_CHANCE = 0.005;
 let splashText = '';
+let splashRare = false;
 let lastSplash = -1;
 
 function pickSplashText() {
+  splashRare = Math.random() < RARE_CHANCE;
+  if (splashRare) { splashText = 'this splash text has a ' + (RARE_CHANCE * 100) + '% chance btw!'; return; }
   if (account && Math.random() < 0.2) { splashText = 'welcome back, ' + account.display + '!'; return; }
   let i;
   do { i = Math.floor(Math.random() * SPLASHES.length); } while (i === lastSplash && SPLASHES.length > 1);
@@ -334,7 +338,9 @@ function pickSplashText() {
 }
 
 function renderSplashText() {
-  $('splash-text').textContent = splashText;
+  const t = $('splash-text');
+  t.textContent = splashText;
+  t.classList.toggle('rainbow', splashRare);
 }
 
 const qh = { t0: 0, timer: null };
@@ -652,6 +658,7 @@ function closedWhileAway(text) {
   room = null;
   localStorage.removeItem('lastRoom');
   resetChatUi();
+  clearUsers();
   show('menu');
   say('[system]: ' + text);
 }
@@ -714,6 +721,7 @@ async function leaveCurrentRoom() {
   const { code, lid } = room;
   const name = me.name;
   resetChatUi();
+  clearUsers();
   if (stopWatch) { stopWatch(); stopWatch = null; }
   room = null;
   localStorage.removeItem('lastRoom');
@@ -816,13 +824,14 @@ function addLocalLine(text) {
 function enterChat() {
   $('log').innerHTML = '';
   $('msg').value = '';
-  userCache.clear();
+  clearUsers();
   resetChatUi();
   room.members = {};
   rj.tries = [];
   pinned = true;
   $('newmsg').hidden = true;
   renderChatHeader();
+  setPromptColor();
   updateCmds();
   startWatch();
   $('msg').focus();
@@ -949,6 +958,7 @@ msgInput.addEventListener('keydown', e => {
   if (e.key !== 'Enter' || !room) return;
   const text = msgInput.value.trim();
   if (!text) return;
+  e.stopPropagation();
   if (text.startsWith('/')) {
     msgInput.value = '';
     updateCmds();
@@ -959,17 +969,34 @@ msgInput.addEventListener('keydown', e => {
 });
 
 // ---------- pictures ----------
-async function pickChatImage() {
-  const file = await pickFile();
-  if (file) openChatImageFromFile(file);
+async function pictureKind(blob) {
+  const b = new Uint8Array(await blob.slice(0, 4).arrayBuffer());
+  if (b[0] === 0x89 && b[1] === 0x50 && b[2] === 0x4e && b[3] === 0x47) return 'image/png';
+  if (b[0] === 0xff && b[1] === 0xd8 && b[2] === 0xff) return 'image/jpeg';
+  return null;
 }
 
-async function openChatImageFromFile(file) {
-  if (!room || !file) return;
-  if (!file.type || !file.type.startsWith('image/')) return addLocalLine('[system]: that is not a picture.');
+async function pickChatImage() {
+  if (!room) return;
+  if (!(window.tt && window.tt.pickImage)) {
+    const file = await pickFile();
+    if (file) openChatImage(file);
+    return;
+  }
+  const res = await window.tt.pickImage();
+  if (!res) return;
+  if (res.error) return addLocalLine('[system]: ' + res.error);
+  openChatImage(new Blob([res.data]));
+}
+
+async function openChatImage(blob) {
+  if (!room || !blob) return;
   if (!online) return addLocalLine('[system]: you are offline.');
+  if (blob.size > 15 * 1024 * 1024) return addLocalLine('[system]: that picture is too big (15 MB max).');
+  const kind = await pictureKind(blob);
+  if (!kind) return addLocalLine('[system]: only png and jpeg pictures can be sent.');
   try {
-    const img = await loadImage(file);
+    const img = await loadImage(blob.slice(0, blob.size, kind));
     openChatEditor({ image: img, title: 'Send picture' });
   } catch (e) {
     console.error(e);
@@ -985,6 +1012,7 @@ function openDrawPad() {
 function openChatEditor(src) {
   if (!room) return;
   closeCard();
+  closePlusQuiet();
   chatUi.ie = true;
   msgInput.blur();
   $('cmds').hidden = true;
@@ -1001,10 +1029,64 @@ function closeChatEditor() {
   if (room) msgInput.focus();
 }
 
-$('attach').addEventListener('click', () => { $('attach').blur(); pickChatImage(); });
+// ---------- the + menu ----------
+const plusItems = [
+  { label: 'Send an image', desc: 'png or jpeg', run: () => pickChatImage() },
+];
+let plusSel = 0;
+
+function renderPlus() {
+  const box = $('plusmenu');
+  box.innerHTML = '';
+  plusItems.forEach((it, i) => {
+    const row = el('div', 'cmd' + (i === plusSel ? ' sel' : ''));
+    row.append(el('span', 'name', it.label), el('span', 'desc', it.desc));
+    row.addEventListener('mousedown', ev => { ev.preventDefault(); runPlus(i); });
+    box.appendChild(row);
+  });
+  box.hidden = false;
+}
+
+function openPlus() {
+  closeCard();
+  $('cmds').hidden = true;
+  chatUi.plus = true;
+  plusSel = 0;
+  msgInput.blur();
+  renderPlus();
+}
+
+function closePlusQuiet() {
+  chatUi.plus = false;
+  $('plusmenu').hidden = true;
+}
+
+function closePlus() {
+  closePlusQuiet();
+  if (room) msgInput.focus();
+}
+
+function runPlus(i) {
+  closePlus();
+  plusItems[i].run();
+}
+
+function plusKey(e) {
+  const key = e.key.toLowerCase();
+  e.preventDefault();
+  if (key === 'escape' || key === 'tab') closePlus();
+  else if (key === 'arrowdown' || key === 's') { plusSel = (plusSel + 1) % plusItems.length; renderPlus(); }
+  else if (key === 'arrowup' || key === 'w') { plusSel = (plusSel - 1 + plusItems.length) % plusItems.length; renderPlus(); }
+  else if (key === 'enter') runPlus(plusSel);
+}
+
+$('attach').addEventListener('click', () => {
+  $('attach').blur();
+  if (chatUi.plus) closePlus(); else openPlus();
+});
 
 function chatBusy() {
-  return chatUi.ie || chatUi.iv || chatUi.pv || chatUi.rp || chatUi.who;
+  return chatUi.ie || chatUi.iv || chatUi.pv || chatUi.rp || chatUi.who || chatUi.plus;
 }
 
 document.addEventListener('paste', e => {
@@ -1013,7 +1095,7 @@ document.addEventListener('paste', e => {
   const it = items.find(i => i.kind === 'file' && i.type.startsWith('image/'));
   if (!it) return;
   e.preventDefault();
-  openChatImageFromFile(it.getAsFile());
+  openChatImage(it.getAsFile());
 });
 
 document.addEventListener('dragover', e => e.preventDefault());
@@ -1021,7 +1103,7 @@ document.addEventListener('drop', e => {
   e.preventDefault();
   if (current !== 'chat' || !room || chatBusy()) return;
   const f = e.dataTransfer && e.dataTransfer.files && e.dataTransfer.files[0];
-  if (f && f.type && f.type.startsWith('image/')) openChatImageFromFile(f);
+  if (f) openChatImage(f);
 });
 
 $('log').addEventListener('mouseup', () => {
@@ -1032,6 +1114,7 @@ screens.chat = {
   key: e => {
     if (chatUi.ie) return editorKey(e);
     if (chatUi.iv) return ivKey(e);
+    if (chatUi.plus) return plusKey(e);
     if (chatUi.rp) return rpKey(e);
     if (chatUi.pv) return pvKey(e);
     if (chatUi.who) return whoKey(e);
@@ -1050,13 +1133,48 @@ screens.chat = {
 
 // ---------- people in chat ----------
 const userCache = new Map();
-const chatUi = { card: false, who: false, pv: false, rp: false, ie: false, iv: false, whoSel: 0, whoList: [], pvUid: null, pvUser: null };
+const chatUi = { card: false, who: false, pv: false, rp: false, ie: false, iv: false, plus: false, whoSel: 0, whoList: [], pvUid: null, pvUser: null };
+
+const userWatch = new Map();
 
 function getUser(uid) {
   if (!uid) return Promise.resolve(null);
   if (account && uid === account.uid) return Promise.resolve(account.profile);
-  if (!userCache.has(uid)) userCache.set(uid, fbGetUser(uid).catch(() => null));
+  if (!userCache.has(uid)) {
+    userCache.set(uid, new Promise(resolve => {
+      let first = true;
+      const stop = fbWatchUser(uid, val => {
+        userCache.set(uid, Promise.resolve(val));
+        if (first) { first = false; resolve(val); } else refreshUserNodes(uid);
+      });
+      userWatch.set(uid, stop);
+    }));
+  }
   return userCache.get(uid);
+}
+
+function clearUsers() {
+  userWatch.forEach(stop => stop());
+  userWatch.clear();
+  userCache.clear();
+}
+
+function refreshUserNodes(uid) {
+  getUser(uid).then(u => {
+    const col = u ? readable(withDefaults(u).accent) : null;
+    $('log').querySelectorAll('.m').forEach(node => {
+      if (node.dataset.uid !== uid) return;
+      const pf = node.querySelector('.cpf');
+      if (pf) fillPfp(pf, u);
+      if (col) node.style.setProperty('--uc', col); else node.style.removeProperty('--uc');
+    });
+    if (chatUi.who) renderWho();
+  });
+}
+
+function setPromptColor() {
+  const col = account ? readable(withDefaults(account.profile).accent) : null;
+  $('prompt').style.color = col || '';
 }
 
 function fillPfp(node, user, size) {
@@ -1096,9 +1214,9 @@ function guestNode(name) {
   row.append(pf, info);
   const bio = el('div', 'pbio');
   bio.append(el('span', 'dim', 'bio'),
-    document.createTextNode('\nthis user is a guest.\nthey probably stink.'));
+    document.createTextNode('\nthis user is a guest!\nno profile, no plans, no commitments.\nthey vanish when the room does.'));
   box.append(row, bio);
-  frameEl(box, 'finger guest');
+  frameEl(box, (name || 'guest') + "'s profile");
   return box;
 }
 
@@ -1108,7 +1226,8 @@ function closeCard() {
 }
 
 function resetChatUi() {
-  chatUi.card = chatUi.who = chatUi.pv = chatUi.rp = chatUi.ie = chatUi.iv = false;
+  chatUi.card = chatUi.who = chatUi.pv = chatUi.rp = chatUi.ie = chatUi.iv = chatUi.plus = false;
+  $('plusmenu').hidden = true;
   $('card').hidden = true;
   $('wl').hidden = true;
   $('pv').hidden = true;
@@ -1276,7 +1395,9 @@ $('log').addEventListener('click', e => {
 
 $('chat').addEventListener('click', e => {
   if (chatUi.card && !e.target.closest('#card')) closeCard();
+  if (chatUi.plus && !e.target.closest('#plusmenu') && !e.target.closest('#attach')) closePlus();
 });
+
 // ---------- reporting ----------
 const RP_FIELDS = [
   ['username', 'Username'],
@@ -1595,7 +1716,8 @@ function renderChangelog() {
   const body = $('cl-body');
   body.innerHTML = '';
 
-  body.appendChild(el('p', 'vhead first ok', '2.0 Updates:'));
+  body.appendChild(el('p', 'dim italic', 'contact: contacttempterm@gmail.com'));
+  body.appendChild(el('p', 'vhead ok', '2.0 Updates:'));
   changelog.current.forEach(note => body.appendChild(el('p', 'ok', '- ' + note)));
   body.appendChild(el('p', 'vhead dim', 'Coming soon:'));
   changelog.soon.forEach(note => body.appendChild(el('p', 'dim', '- ' + note)));
@@ -2625,7 +2747,7 @@ function profileNode(raw) {
     box.append(row, strip);
   }
   box.appendChild(bioNode(p));
-  frameEl(box, 'finger ' + p.username);
+  frameEl(box, p.username + "'s profile");
   return box;
 }
 
@@ -3249,6 +3371,7 @@ function onProfileLive(val) {
   account.username = val.username;
   account.display = val.display;
   me.name = val.display;
+  if (current === 'chat') { refreshUserNodes(account.uid); setPromptColor(); }
   if (current === 'profile') renderProfile();
   else if (current === 'menu') render();
 }
