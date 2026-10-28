@@ -23,7 +23,7 @@ function createWindow() {
     resizable: adminMode,
     backgroundColor: '#0c0c0c',
     autoHideMenuBar: true,
-    webPreferences: { preload: path.join(__dirname, 'preload.js') },
+    webPreferences: { preload: path.join(__dirname, 'preload.js'), backgroundThrottling: false },
   });
   win.loadFile(adminMode ? 'admin.html' : 'index.html');
 }

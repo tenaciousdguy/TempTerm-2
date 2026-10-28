@@ -4,7 +4,8 @@ import {
   fbWatchNotices, fbClearNotice, fbWatchProfile, fbChangeUsername, fbLoadSettings,
   fbSaveSettings, fbFinishProfile, withTimeout,
   fbCreateRoom, fbJoinRoom, fbLeaveRoom, fbCleanup, fbSendMessage, fbWatchRoom, fbListRooms,
-  fbChangePassword, fbChangeEmail, fbDeleteAccount, fbWatchStatus, fbWatchUser
+  fbChangePassword, fbChangeEmail, fbDeleteAccount, fbWatchStatus, fbWatchUser,
+  fbSweep
 } from './firebase.js';
 import {
   settings, save, THEMES, SIZES, applyTheme, applyColors, applyUi, applyPfps, applySize,
@@ -132,6 +133,15 @@ function waitForServer(timeout) {
   });
 }
 
+let janitor = null;
+
+function startJanitor() {
+  clearInterval(janitor);
+  const run = () => { if (online && me.uid && !room) fbSweep().catch(() => {}); };
+  setTimeout(run, 8000);
+  janitor = setInterval(run, 120000);
+}
+
 async function initSession() {
   const info = await fbInit();
   me.uid = info.uid;
@@ -142,6 +152,7 @@ async function initSession() {
   }
   startLive();
   sessionOk = true;
+  startJanitor();
   const last = localStorage.getItem('lastRoom');
   if (last) { await fbCleanup(last).catch(() => {}); localStorage.removeItem('lastRoom'); }
 }
@@ -3058,17 +3069,19 @@ async function epSave() {
       return epFocus(ep.idx.username, 0);
     }
   }
-  const res = await fbSaveProfile(account.uid, {
+  const cur = withDefaults(account.profile);
+  const fields = {
     layout: s.layout,
     accent: s.accent,
     display,
     bio: s.bio.trim() || null,
     letter,
     pfpMode: s.pfpMode,
-    pfpImg: s.pfpImg || null,
     bannerMode: s.bannerMode,
-    bannerImg: s.bannerImg || null,
-  });
+  };
+  if (s.pfpImg !== cur.pfpImg) fields.pfpImg = s.pfpImg || null;
+  if (s.bannerImg !== cur.bannerImg) fields.bannerImg = s.bannerImg || null;
+  const res = await fbSaveProfile(account.uid, fields);
   ep.busy = false;
   if (res.error) return epMsg(res.error, 'err');
   await refreshAccountProfile();

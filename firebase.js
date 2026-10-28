@@ -26,7 +26,10 @@ export const db = getDatabase(app);
 export function watchConnection(callback) {
   onValue(
     ref(db, '.info/connected'),
-    snap => callback(snap.val() === true),
+    snap => {
+      note('connected = ' + (snap.val() === true));
+      callback(snap.val() === true);
+    },
     err => console.error('connection error:', err)
   );
 }
@@ -82,7 +85,7 @@ export async function fbLoadSettings(uid) {
 
 export async function fbSaveSettings(uid, data) {
   try {
-    await set(ref(db, `users/${uid}/settings`), data);
+    await retryOnce(() => set(ref(db, `users/${uid}/settings`), data), 9000, 'saveSettings');
     return {};
   } catch (err) {
     console.error('settings sync failed:', err);
@@ -153,11 +156,13 @@ export async function fbLoadProfile(uid) {
 
 export async function fbSaveProfile(uid, fields) {
   try {
-  await withTimeout(update(ref(db, `users/${uid}`), fields));
+    await retryOnce(() => update(ref(db, `users/${uid}`), fields), 9000, 'saveProfile');
     return {};
   } catch (err) {
     console.error(err);
-    return { error: 'could not save. check your connection.' };
+    return { error: err.code === 'timeout'
+      ? 'the server did not answer. your change may still have gone through, so check your profile.'
+      : 'could not save. check your connection.' };
   }
 }
 
@@ -335,18 +340,62 @@ function pad(n) {
   return n < 10 ? '0' + n : String(n);
 }
 
-export function withTimeout(promise, ms = 12000) {
+// ---------- connection health ----------
+const events = [];
+
+function note(msg) {
+  events.push(new Date().toTimeString().slice(0, 8) + '  ' + msg);
+  if (events.length > 80) events.shift();
+}
+
+let lastKick = 0;
+
+// Resets a stalled connection. Safe to call often: it only acts once every 15 seconds.
+export function fbKick() {
+  const now = Date.now();
+  if (now - lastKick < 15000) return false;
+  lastKick = now;
+  note('connection looks stalled, resetting it');
+  try { goOffline(db); } catch (e) { console.error(e); }
+  setTimeout(() => { try { goOnline(db); } catch (e) { console.error(e); } }, 500 * (globalThis.__ttTimeScale || 1));
+  return true;
+}
+
+export function withTimeout(promise, ms = 12000, label = '') {
+  const scale = globalThis.__ttTimeScale || 1;
+  const t0 = Date.now();
   let timer;
   const timeout = new Promise((_, reject) => {
-    timer = setTimeout(() => reject(Object.assign(new Error('timeout'), { code: 'timeout' })), ms);
+    timer = setTimeout(() => {
+      if (label) note('TIMEOUT ' + label + ' after ' + (Date.now() - t0) + 'ms');
+      fbKick();
+      reject(Object.assign(new Error('timeout'), { code: 'timeout' }));
+    }, ms * scale);
   });
-  return Promise.race([promise, timeout]).finally(() => clearTimeout(timer));
+  return Promise.race([promise, timeout])
+    .then(v => {
+      const took = Date.now() - t0;
+      if (label && took > 3000) note('slow ' + label + ' ' + took + 'ms');
+      return v;
+    })
+    .finally(() => clearTimeout(timer));
+}
+
+// For safe-to-repeat writes: if the first try stalls, the connection is reset and it tries once more
+async function retryOnce(make, ms, label) {
+  try {
+    return await withTimeout(make(), ms, label);
+  } catch (err) {
+    if (err.code !== 'timeout') throw err;
+    await new Promise(r => setTimeout(r, 1500 * (globalThis.__ttTimeScale || 1)));
+    return withTimeout(make(), ms, label + ' (retry)');
+  }
 }
 
 function pushSystem(code, name, text) {
   return withTimeout(push(ref(db, `rooms/${code}/messages`), {
     uid: auth.currentUser.uid, name, type: 'system', text, ts: serverTimestamp(),
-  }), 8000).catch(err => console.error('system message failed:', err));
+  }), 8000, 'systemMessage').catch(err => console.error('system message failed:', err));
 }
 
 async function createInner({ type, limit, hostName }) {
@@ -370,7 +419,7 @@ async function createInner({ type, limit, hostName }) {
 }
 
 export function fbCreateRoom(opts) {
-  return withTimeout(createInner(opts), 15000);
+  return withTimeout(createInner(opts), 15000, 'createRoom');
 }
 
 async function joinInner(code, name, opts) {
@@ -435,49 +484,87 @@ async function joinInner(code, name, opts) {
   return { meta, slot };
 }
 
-// opts.fresh: you just created the room. opts.lid: joining a private room from the list.
-// opts.rejoin: coming back after a dropped connection.
 export function fbJoinRoom(code, name, opts = {}) {
-  return withTimeout(joinInner(code, name, opts), 15000);
+  return withTimeout(joinInner(code, name, opts), 15000, 'joinRoom');
 }
 
+// Deletes everything about an empty room in ONE step, so a stall can't leave it half-deleted
 export async function fbCleanup(code) {
-  const members = await get(ref(db, `rooms/${code}/members`));
+  const members = await withTimeout(get(ref(db, `rooms/${code}/members`)), 8000, 'cleanup:members');
   if (members.exists()) return;
-  const metaSnap = await get(ref(db, `rooms/${code}/meta`));
-  const meta = metaSnap.val();
-  await remove(ref(db, `rooms/${code}/messages`));
-  await remove(ref(db, `rooms/${code}/slots`)).catch(() => {});
-  if (meta && meta.lid) {
-    await remove(ref(db, `lobby/${meta.lid}`));
-    await remove(ref(db, `lobbyCodes/${meta.lid}`));
+  const metaSnap = await withTimeout(get(ref(db, `rooms/${code}/meta`)), 8000, 'cleanup:meta');
+  const meta = metaSnap.exists() ? metaSnap.val() : null;
+  const lid = meta && meta.lid;
+
+  let lobbySnap = null;
+  let codeSnap = null;
+  if (lid) {
+    [lobbySnap, codeSnap] = await withTimeout(Promise.all([
+      get(ref(db, `lobby/${lid}`)).catch(() => null),
+      get(ref(db, `lobbyCodes/${lid}`)).catch(() => null),
+    ]), 8000, 'cleanup:lobby');
   }
-  await remove(ref(db, `rooms/${code}/meta`));
+
+  // Only delete what exists: the rules refuse to delete something that isn't there
+  const updates = {
+    [`rooms/${code}/messages`]: null,
+    [`rooms/${code}/slots`]: null,
+  };
+  if (meta) updates[`rooms/${code}/meta`] = null;
+  if (lobbySnap && lobbySnap.exists()) updates[`lobby/${lid}`] = null;
+  if (codeSnap && codeSnap.exists()) updates[`lobbyCodes/${lid}`] = null;
+
+  try {
+    await withTimeout(update(ref(db), updates), 10000, 'cleanup:delete');
+  } catch (err) {
+    if (err.code === 'timeout') throw err;
+    console.warn('cleanup in one step failed, trying piece by piece:', err.code || err.message);
+    for (const path of Object.keys(updates)) {
+      try { await withTimeout(remove(ref(db, path)), 6000, 'cleanup:' + path); }
+      catch (e) { console.warn('could not remove', path, e.code || e.message); }
+    }
+  }
 }
 
 async function fbCloseLobby(lid) {
-  const codeSnap = await get(ref(db, `lobbyCodes/${lid}`));
-  if (codeSnap.exists()) return fbCleanup(codeSnap.val());
+  const codeSnap = await get(ref(db, `lobbyCodes/${lid}`)).catch(() => null);
+  if (codeSnap && codeSnap.exists()) return fbCleanup(codeSnap.val());
   await remove(ref(db, `lobby/${lid}`));
 }
 
 export async function fbLeaveRoom(code, name, lid) {
   const uid = auth.currentUser.uid;
-  await onDisconnect(ref(db)).cancel();
-  const mine = await withTimeout(get(ref(db, `rooms/${code}/members/${uid}`)), 6000).catch(() => null);
+  const mine = await withTimeout(get(ref(db, `rooms/${code}/members/${uid}`)), 6000, 'leave:read').catch(() => null);
   const slot = mine && mine.exists() ? mine.val().slot : null;
   pushSystem(code, name, `${name} has left the room.`);
-  await remove(ref(db, `rooms/${code}/members/${uid}`));
-  if (slot) await remove(ref(db, `rooms/${code}/slots/${slot}`)).catch(() => {});
-  if (lid) await remove(ref(db, `lobbyMembers/${lid}/${uid}`));
-  await fbCleanup(code);
+
+  const updates = { [`rooms/${code}/members/${uid}`]: null };
+  if (slot) updates[`rooms/${code}/slots/${slot}`] = null;
+  if (lid) updates[`lobbyMembers/${lid}/${uid}`] = null;
+
+  try {
+    await withTimeout(update(ref(db), updates), 8000, 'leave:remove');
+  } catch (err) {
+    if (err.code === 'timeout') {
+      console.warn('leaving timed out. the server finishes it when the connection resets.');
+      return;
+    }
+    console.warn('leave in one step failed, trying piece by piece:', err.code || err.message);
+    for (const path of Object.keys(updates)) {
+      try { await withTimeout(remove(ref(db, path)), 6000, 'leave:' + path); }
+      catch (e) { console.warn('could not remove', path, e.code || e.message); }
+    }
+  }
+  onDisconnect(ref(db)).cancel().catch(() => {});
+  try { await fbCleanup(code); }
+  catch (err) { console.warn('cleanup after leaving failed:', err.code || err.message); }
 }
 
 export function fbSendMessage(code, name, text, extra = {}) {
   const msg = { uid: auth.currentUser.uid, name, ts: serverTimestamp() };
   if (text || !extra.img) msg.text = text;
   if (extra.img) msg.img = extra.img;
-  return withTimeout(push(ref(db, `rooms/${code}/messages`), msg), extra.img ? 20000 : 10000);
+  return withTimeout(push(ref(db, `rooms/${code}/messages`), msg), extra.img ? 20000 : 10000, 'sendMessage');
 }
 
 export function fbWatchRoom(code, handlers) {
@@ -490,7 +577,7 @@ export function fbWatchRoom(code, handlers) {
 }
 
 export async function fbListRooms() {
-  const [lobbySnap, memSnap] = await withTimeout(Promise.all([get(ref(db, 'lobby')), get(ref(db, 'lobbyMembers'))]));
+  const [lobbySnap, memSnap] = await withTimeout(Promise.all([get(ref(db, 'lobby')), get(ref(db, 'lobbyMembers'))]), 12000, 'listRooms');
   const mem = memSnap.val() || {};
   const rooms = [];
   lobbySnap.forEach(child => {
@@ -504,5 +591,25 @@ export async function fbListRooms() {
   return rooms.filter(r => r.count > 0);
 }
 
-// Test helper: run __tt.offline() and __tt.online() in the dev console to simulate a dropped connection.
-window.__tt = { offline: () => goOffline(db), online: () => goOnline(db) };
+// Janitor: removes rooms that nobody is in. Returns how many it found.
+export async function fbSweep() {
+  const [lobbySnap, memSnap] = await withTimeout(Promise.all([get(ref(db, 'lobby')), get(ref(db, 'lobbyMembers'))]), 12000, 'sweep');
+  const mem = memSnap.val() || {};
+  const empty = [];
+  lobbySnap.forEach(child => {
+    const v = child.val() || {};
+    const count = mem[child.key] ? Object.keys(mem[child.key]).length : 0;
+    if (count === 0 && Date.now() - (v.created || 0) > 15000) empty.push(child.key);
+  });
+  for (const lid of empty.slice(0, 5)) await fbCloseLobby(lid).catch(() => {});
+  if (empty.length) note('janitor cleared ' + Math.min(empty.length, 5) + ' empty room(s)');
+  return empty.length;
+}
+
+// Console helpers. In the app, press Ctrl+Shift+I and type: copy(__tt.report())
+window.__tt = {
+  offline: () => goOffline(db),
+  online: () => goOnline(db),
+  kick: () => { lastKick = 0; return fbKick(); },
+  report: () => events.join('\n'),
+};
