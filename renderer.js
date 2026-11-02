@@ -1225,7 +1225,7 @@ function guestNode(name) {
   row.append(pf, info);
   const bio = el('div', 'pbio');
   bio.append(el('span', 'dim', 'bio'),
-    document.createTextNode('\nthis user is a guest!\nno profile, no plans, no commitments.\nthey vanish when the room does.'));
+    document.createTextNode('\nthis user is a guest.'));
   box.append(row, bio);
   frameEl(box, (name || 'guest') + "'s profile");
   return box;
@@ -1630,15 +1630,13 @@ const changelog = {
     'Settings and custom themes now sync to your account',
     'Reconnects on its own if your connection drops',
     'A first-launch tutorial and a new boot screen',
+    'Send pictures in chat, with a preview and a small editor (draw and crop)',
+    'A drawing pad: /draw in chat, or draw your own profile picture and banner',
   ],
   soon: [
     'Music player and sounds',
-    'Images and GIFs in chat',
-    'Drawing pad',
-    'Chat commands',
-    'VC',
-    'Minigames',
-    'Moderation.',
+    'GIFs in chat',
+    'Voice calls and /kick',
     'More languages',
     'The classic 1.0 look',
   ],
@@ -2843,6 +2841,8 @@ function epRefresh() {
 const LAYOUT_LABELS = { 1: 'Banner on top', 2: 'Banner beside picture', 3: 'Banner as divider' };
 
 function openEditProfile() {
+  ep.drawing = false;
+  closeEditor();
   const p = withDefaults(account.profile);
   ep.s = {
     layout: p.layout, accent: p.accent, display: p.display, bio: p.bio, letter: p.letter, username: '',
@@ -2962,7 +2962,7 @@ function openEditProfile() {
   const pic = section('Profile picture');
   const prow = newRow(pic);
   const letterArt = el('div', 'tart');
-  tile(prow, letterArt, 'Letter', () => { ep.s.pfpMode = 'letter'; epRefresh(); }, () => ep.s.pfpMode === 'letter');
+  tile(prow, el('div', 'tart glyph', '✎'), 'Drawing', () => openProfileDraw('pfp'));
   ep.art.push(() => { letterArt.textContent = ep.s.letter || '?'; letterArt.style.background = ep.s.accent; });
 
   const imgArt = el('div', 'tart');
@@ -3013,7 +3013,7 @@ function openEditProfile() {
     } else bannerArt.appendChild(el('span', 'dim', '+'));
     bannerCap.textContent = !ep.s.bannerImg ? 'Image (upload)' : ep.s.bannerMode === 'image' ? 'Image (click to replace)' : 'Image (your last one)';
   });
-  tile(brow, el('div', 'tart wide glyph', '✎'), 'Drawing', () => epMsg('the drawing pad comes later.', 'dim'));
+  tile(brow, el('div', 'tart wide glyph', '✎'), 'Drawing', () => openProfileDraw('banner'));
 
   const actions = section('');
   const btnRow = (label, cls, fn) => {
@@ -3110,6 +3110,7 @@ async function epReset() {
 
 screens.editprofile = {
   key: e => {
+    if (ep.drawing) return editorKey(e);
     const ctl = epCtl();
     const typing = !!ctl.input && document.activeElement === ctl.input;
     const key = e.key.toLowerCase();
@@ -3159,6 +3160,38 @@ function loadImage(file) {
     img.onerror = () => { URL.revokeObjectURL(url); reject(new Error('bad image')); };
     img.src = url;
   });
+}
+
+function openProfileDraw(kind) {
+  ep.drawing = true;
+  const size = kind === 'pfp' ? { w: 256, h: 256 } : { w: 768, h: 192 };
+  openEditor($('pie'), {
+    blank: { ...size, bg: '#1a1a1a' },
+    profile: true,
+    title: kind === 'pfp' ? 'Draw your picture' : 'Draw your banner',
+    onDone: canvas => {
+      closeProfileDraw();
+      const img = new Image();
+      img.onload = () => openCrop(kind, img,
+        url => {
+          if (kind === 'pfp') { ep.s.pfpImg = url; ep.s.pfpMode = 'image'; }
+          else { ep.s.bannerImg = url; ep.s.bannerMode = 'image'; }
+          epRefresh();
+          show('editprofile');
+          epFocus(ep.r, ep.c);
+          epMsg((kind === 'pfp' ? 'picture' : 'banner') + ' ready. press Save to keep it.', 'ok');
+        },
+        () => { show('editprofile'); epFocus(ep.r, ep.c); epMsg('', 'dim'); });
+      img.src = canvas.toDataURL('image/png');
+    },
+    onCancel: () => closeProfileDraw(),
+  });
+}
+
+function closeProfileDraw() {
+  ep.drawing = false;
+  closeEditor();
+  if (current === 'editprofile') epFocus(ep.r, ep.c);
 }
 
 async function epUpload(kind) {

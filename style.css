@@ -686,3 +686,5 @@ nav { width: 330px; }
 .ie-hint { margin: 0; padding: 0 14px 8px; font-size: 12px; font-style: italic; color: var(--dim); }
 .chip.go { border-color: var(--accent); color: var(--accent); }
 @media (prefers-reduced-motion: reduce) { .splash.rainbow { animation: none; } .ie-over { transition: none; } }
+
+.ie-bg { display: flex; align-items: center; gap: 6px; font-size: 12px; color: var(--dim); }
