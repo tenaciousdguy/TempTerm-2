@@ -381,7 +381,7 @@ export function withTimeout(promise, ms = 12000, label = '') {
     .finally(() => clearTimeout(timer));
 }
 
-// For safe-to-repeat writes: if the first try stalls, the connection is reset and it tries once more
+// For safe-to-repeat writes: if the first try stalls, the connection is reset and it tries once more.
 async function retryOnce(make, ms, label) {
   try {
     return await withTimeout(make(), ms, label);
@@ -430,6 +430,9 @@ async function joinInner(code, name, opts) {
   if (!metaSnap.exists()) return { error: opts.lid ? 'wrong code.' : closed };
   const meta = metaSnap.val();
   if (opts.lid && meta.lid !== opts.lid) return { error: 'wrong code.' };
+
+  const removed = await get(ref(db, `rooms/${code}/kicked/${uid}`)).catch(() => null);
+  if (removed && removed.exists()) return { error: opts.rejoin ? 'kicked' : 'you were removed from that room by its owner.' };
 
   const [memSnap, slotSnap] = await Promise.all([
     get(ref(db, `rooms/${code}/members`)),
@@ -488,7 +491,7 @@ export function fbJoinRoom(code, name, opts = {}) {
   return withTimeout(joinInner(code, name, opts), 15000, 'joinRoom');
 }
 
-// Deletes everything about an empty room in ONE step, so a stall can't leave it half-deleted
+// Deletes everything about an empty room in ONE step, so a stall can't leave it half-deleted.
 export async function fbCleanup(code) {
   const members = await withTimeout(get(ref(db, `rooms/${code}/members`)), 8000, 'cleanup:members');
   if (members.exists()) return;
@@ -505,10 +508,11 @@ export async function fbCleanup(code) {
     ]), 8000, 'cleanup:lobby');
   }
 
-  // Only delete what exists: the rules refuse to delete something that isn't there
+  // Only delete what exists: the rules refuse to delete something that isn't there.
   const updates = {
     [`rooms/${code}/messages`]: null,
     [`rooms/${code}/slots`]: null,
+    [`rooms/${code}/kicked`]: null,
   };
   if (meta) updates[`rooms/${code}/meta`] = null;
   if (lobbySnap && lobbySnap.exists()) updates[`lobby/${lid}`] = null;
@@ -532,11 +536,11 @@ async function fbCloseLobby(lid) {
   await remove(ref(db, `lobby/${lid}`));
 }
 
-export async function fbLeaveRoom(code, name, lid) {
+export async function fbLeaveRoom(code, name, lid, opts = {}) {
   const uid = auth.currentUser.uid;
   const mine = await withTimeout(get(ref(db, `rooms/${code}/members/${uid}`)), 6000, 'leave:read').catch(() => null);
   const slot = mine && mine.exists() ? mine.val().slot : null;
-  pushSystem(code, name, `${name} has left the room.`);
+  if (!opts.silent) pushSystem(code, name, `${name} has left the room.`);
 
   const updates = { [`rooms/${code}/members/${uid}`]: null };
   if (slot) updates[`rooms/${code}/slots/${slot}`] = null;
@@ -560,6 +564,18 @@ export async function fbLeaveRoom(code, name, lid) {
   catch (err) { console.warn('cleanup after leaving failed:', err.code || err.message); }
 }
 
+// The room owner removes someone. The rules only allow this for the owner of that room.
+export async function fbKickMember(code, uid, slot, lid, hostName, targetName) {
+  const updates = {
+    [`rooms/${code}/kicked/${uid}`]: true,
+    [`rooms/${code}/members/${uid}`]: null,
+  };
+  if (slot) updates[`rooms/${code}/slots/${slot}`] = null;
+  if (lid) updates[`lobbyMembers/${lid}/${uid}`] = null;
+  pushSystem(code, hostName, `${targetName} was removed from the room by ${hostName}.`);
+  await withTimeout(update(ref(db), updates), 8000, 'kick');
+}
+
 export function fbSendMessage(code, name, text, extra = {}) {
   const msg = { uid: auth.currentUser.uid, name, ts: serverTimestamp() };
   if (text || !extra.img) msg.text = text;
@@ -573,6 +589,13 @@ export function fbWatchRoom(code, handlers) {
     onChildAdded(ref(db, `rooms/${code}/messages`), snap => handlers.onMessage(snap.key, snap.val()), fail),
     onValue(ref(db, `rooms/${code}/members`), snap => handlers.onMembers(snap.val() || {}), fail),
   ];
+  if (handlers.onKicked && auth.currentUser) {
+    stops.push(onValue(
+      ref(db, `rooms/${code}/kicked/${auth.currentUser.uid}`),
+      snap => { if (snap.exists()) handlers.onKicked(); },
+      () => {}
+    ));
+  }
   return () => stops.forEach(stop => stop());
 }
 

@@ -5,7 +5,7 @@ import {
   fbSaveSettings, fbFinishProfile, withTimeout,
   fbCreateRoom, fbJoinRoom, fbLeaveRoom, fbCleanup, fbSendMessage, fbWatchRoom, fbListRooms,
   fbChangePassword, fbChangeEmail, fbDeleteAccount, fbWatchStatus, fbWatchUser,
-  fbSweep
+  fbSweep, fbKickMember
 } from './firebase.js';
 import {
   settings, save, THEMES, SIZES, applyTheme, applyColors, applyUi, applyPfps, applySize,
@@ -685,6 +685,7 @@ async function rejoinRoom() {
   try {
     const res = await fbJoinRoom(code, me.name, { rejoin: true });
     if (!room || room.code !== code) return;
+    if (res.error === 'kicked') return handleKicked();
     if (res.error) return closedWhileAway(res.error === 'closed' ? 'the room closed while you were disconnected.' : res.error);
     restartWatch();
   } catch (e) {
@@ -713,6 +714,7 @@ function startWatch() {
       renderChatHeader();
       if (online && me.uid && !members[me.uid] && !rj.busy) rejoinRoom();
     },
+    onKicked: () => handleKicked(),
     onError: err => {
       console.warn('room listener stopped:', err.code);
       if (online) setTimeout(rejoinRoom, 500);
@@ -861,7 +863,7 @@ const commands = {
   image: { desc: 'send a picture', run: () => pickChatImage() },
   draw: { desc: 'draw something to send', run: () => openDrawPad() },
   gif: { desc: 'search for a gif (coming soon)', soon: true },
-  kick: { desc: 'remove someone from the room (coming soon)', soon: true },
+  kick: { desc: 'remove someone (room owner only)', hostOnly: true, run: arg => startKick(arg) },
   voice: { desc: 'join a voice call (coming soon)', soon: true },
   leave: { desc: 'leave the room', run: () => leaveCurrentRoom() },
 };
@@ -882,7 +884,7 @@ function updateCmds() {
   const v = msgInput.value.toLowerCase();
   cmdMatches = [];
   if (v.startsWith('/') && !v.includes(' ')) {
-    cmdMatches = Object.keys(commands).filter(n => ('/' + n).startsWith(v));
+    cmdMatches = Object.keys(commands).filter(n => ('/' + n).startsWith(v) && (!commands[n].hostOnly || isHost()));
   }
   if (!cmdMatches.length) { box.hidden = true; return; }
   cmdSel = Math.min(cmdSel, cmdMatches.length - 1);
@@ -898,9 +900,10 @@ function updateCmds() {
 
 function runCommand(text) {
   const name = text.slice(1).split(' ')[0].toLowerCase();
+  const arg = text.slice(1).split(' ').slice(1).join(' ').trim();
   const cmd = commands[name];
   if (!cmd) addLocalLine('[system]: unknown command: /' + name);
-  else if (cmd.run) cmd.run();
+  else if (cmd.run) cmd.run(arg);
   else addLocalLine('[system]: /' + name + ' is coming soon.');
 }
 
@@ -1144,7 +1147,7 @@ screens.chat = {
 
 // ---------- people in chat ----------
 const userCache = new Map();
-const chatUi = { card: false, who: false, pv: false, rp: false, ie: false, iv: false, plus: false, whoSel: 0, whoList: [], pvUid: null, pvUser: null };
+const chatUi = { card: false, who: false, pv: false, rp: false, ie: false, iv: false, plus: false, whoMode: 'list', whoSel: 0, whoList: [], pvUid: null, pvUser: null };
 
 const userWatch = new Map();
 
@@ -1225,7 +1228,7 @@ function guestNode(name) {
   row.append(pf, info);
   const bio = el('div', 'pbio');
   bio.append(el('span', 'dim', 'bio'),
-    document.createTextNode('\nthis user is a guest.'));
+    document.createTextNode('\nthis user is a guest!\nno profile, no plans, no commitments.\nthey vanish when the room does.'));
   box.append(row, bio);
   frameEl(box, (name || 'guest') + "'s profile");
   return box;
@@ -1328,8 +1331,10 @@ function renderWho() {
     getUser(m.uid).then(u => fillPfp(pf, u));
     box.appendChild(row);
   });
-  box.appendChild(el('div', 'dim small', '↑ ↓ = choose | Enter = view profile | Esc = close'));
-  frameEl(box, 'in this room');
+  box.appendChild(el('div', 'dim small', chatUi.whoMode === 'kick'
+    ? '↑ ↓ = choose | Enter = remove them | Esc = cancel'
+    : '↑ ↓ = choose | Enter = view profile' + (isHost() ? ' | K = remove' : '') + ' | Esc = close'));
+  frameEl(box, chatUi.whoMode === 'kick' ? 'remove who?' : 'in this room');
   box.hidden = false;
 }
 
@@ -1341,6 +1346,7 @@ function openWho() {
     .sort((a, b) => a.name.localeCompare(b.name));
   chatUi.whoSel = Math.max(0, chatUi.whoList.findIndex(m => m.uid === me.uid));
   closeCard();
+  chatUi.whoMode = 'list';
   chatUi.who = true;
   msgInput.blur();
   renderWho();
@@ -1365,9 +1371,75 @@ function whoKey(e) {
   else if (key === 'arrowup' || key === 'w') moveWho(-1);
   else if (key === 'enter') {
     const m = chatUi.whoList[chatUi.whoSel];
+    const removing = chatUi.whoMode === 'kick';
     closeWho();
-    openProfileOverlay(m.uid, m.name);
+    if (removing) doKick(m); else openProfileOverlay(m.uid, m.name);
+  } else if (key === 'k' && chatUi.whoMode === 'list' && isHost()) {
+    const m = chatUi.whoList[chatUi.whoSel];
+    if (m && m.uid !== me.uid) { closeWho(); doKick(m); }
   }
+}
+
+// ---------- removing people (room owner only) ----------
+function isHost() {
+  return !!(room && me.uid && room.host === me.uid);
+}
+
+function otherMembers() {
+  return Object.entries(room.members || {})
+    .filter(([uid]) => uid !== me.uid)
+    .map(([uid, m]) => ({ uid, name: m.name || 'guest' }))
+    .sort((a, b) => a.name.localeCompare(b.name));
+}
+
+function startKick(arg) {
+  if (!isHost()) return addLocalLine('[system]: only the room owner can remove people.');
+  const others = otherMembers();
+  if (!others.length) return addLocalLine('[system]: nobody else is in the room.');
+  if (!arg) return openKickList(others);
+  const q = arg.toLowerCase();
+  const exact = others.filter(o => o.name.toLowerCase() === q);
+  const pool = exact.length ? exact : others.filter(o => o.name.toLowerCase().startsWith(q));
+  if (pool.length === 1) return doKick(pool[0]);
+  if (!pool.length) return addLocalLine('[system]: nobody here is called "' + arg + '".');
+  addLocalLine('[system]: more than one match (' + pool.map(o => o.name).join(', ') + '). type more of the name, or use /kick on its own to pick.');
+}
+
+function openKickList(others) {
+  closeCard();
+  chatUi.whoList = others;
+  chatUi.whoSel = 0;
+  chatUi.whoMode = 'kick';
+  chatUi.who = true;
+  msgInput.blur();
+  renderWho();
+}
+
+async function doKick(target) {
+  if (!isHost() || !room) return;
+  const m = (room.members || {})[target.uid];
+  if (!m) return addLocalLine('[system]: ' + target.name + ' already left.');
+  try {
+    await fbKickMember(room.code, target.uid, m.slot, room.lid, me.name, target.name);
+  } catch (e) {
+    console.error(e);
+    addLocalLine('[system]: could not remove ' + target.name + '. try again.');
+  }
+}
+
+function handleKicked() {
+  if (!room) return;
+  const { code, lid } = room;
+  const name = me.name;
+  resetChatUi();
+  clearUsers();
+  if (stopWatch) { stopWatch(); stopWatch = null; }
+  room = null;
+  localStorage.removeItem('lastRoom');
+  show('menu');
+  noticeUi.queue.push({ kind: 'notice', local: true, text: 'You were removed from the room by its owner.' });
+  showNextNotice();
+  fbLeaveRoom(code, name, lid, { silent: true }).catch(() => {});
 }
 
 function openViewer(src) {
@@ -1632,11 +1704,11 @@ const changelog = {
     'A first-launch tutorial and a new boot screen',
     'Send pictures in chat, with a preview and a small editor (draw and crop)',
     'A drawing pad: /draw in chat, or draw your own profile picture and banner',
+    'Voice calls and /kick',
   ],
   soon: [
     'Music player and sounds',
     'GIFs in chat',
-    'Voice calls and /kick',
     'More languages',
     'The classic 1.0 look',
   ],
